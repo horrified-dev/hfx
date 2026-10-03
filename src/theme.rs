@@ -510,181 +510,97 @@ pub fn section(ui: &mut Ui, text: &str) {
     ui.add_space(3.0);
 }
 
+/// Reuse our own hfx monogram for welcome, window, and desktop branding.
 pub fn logo(ui: &mut Ui, size: f32, time: f64, animated: bool) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
-    let c = rect.center();
-    let breath = if animated {
-        (time as f32 * 1.4).sin() * 0.025
-    } else {
-        0.0
-    };
-    let r = size * (0.38 + breath);
-    let points = (0..=64)
-        .map(|i| {
-            let a = i as f32 * std::f32::consts::TAU / 64.0;
-            let radius = r * (1.0 + 0.075 * (a * 6.0).cos());
-            c + vec2(a.cos(), a.sin()) * radius
-        })
-        .collect();
-    ui.painter().add(egui::Shape::line(
-        points,
-        Stroke::new(1.5, ACCENT.gamma_multiply(0.65)),
-    ));
-    icon(ui.painter(), c, size * 0.4, Icon::Terminal, ACCENT);
-}
-
-pub fn rich_inline(text: &str, size: f32, color: Color32) -> egui::text::LayoutJob {
-    let mut job = egui::text::LayoutJob::default();
-    let mut rest = text;
-    while !rest.is_empty() {
-        let next = rest
-            .find("**")
-            .map(|i| (i, "**"))
-            .into_iter()
-            .chain(rest.find('`').map(|i| (i, "`")))
-            .min_by_key(|(i, _)| *i);
-        let Some((start, marker)) = next else {
-            job.append(
-                rest,
-                0.0,
-                egui::TextFormat {
-                    font_id: FontId::proportional(size),
-                    color,
-                    ..Default::default()
-                },
-            );
-            break;
-        };
-        job.append(
-            &rest[..start],
-            0.0,
-            egui::TextFormat {
-                font_id: FontId::proportional(size),
-                color,
-                ..Default::default()
-            },
+    let id = egui::Id::new("hfx.brand-monogram");
+    let cached = ui
+        .ctx()
+        .data_mut(|data| data.get_temp::<egui::TextureHandle>(id));
+    let texture = cached.unwrap_or_else(|| {
+        let image = image::load_from_memory(include_bytes!("../assets/hfx.png"))
+            .expect("embedded hfx monogram")
+            .into_rgba8();
+        let pixels = egui::ColorImage::from_rgba_unmultiplied(
+            [image.width() as usize, image.height() as usize],
+            image.as_raw(),
         );
-        let after = &rest[start + marker.len()..];
-        if let Some(end) = after.find(marker) {
-            job.append(
-                &after[..end],
-                0.0,
-                egui::TextFormat {
-                    font_id: if marker == "`" {
-                        FontId::monospace(size - 1.0)
-                    } else {
-                        FontId::proportional(size)
-                    },
-                    color: if marker == "`" { ACCENT } else { TEXT },
-                    background: if marker == "`" {
-                        SURFACE
-                    } else {
-                        Color32::TRANSPARENT
-                    },
-                    extra_letter_spacing: if marker == "**" { 0.2 } else { 0.0 },
-                    ..Default::default()
-                },
-            );
-            rest = &after[end + marker.len()..];
-        } else {
-            job.append(
-                &rest[start..],
-                0.0,
-                egui::TextFormat {
-                    font_id: FontId::proportional(size),
-                    color,
-                    ..Default::default()
-                },
-            );
-            break;
-        }
-    }
-    job
+        let texture = ui
+            .ctx()
+            .load_texture("hfx-monogram", pixels, egui::TextureOptions::LINEAR);
+        ui.ctx()
+            .data_mut(|data| data.insert_temp(id, texture.clone()));
+        texture
+    });
+    let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
+    let scale = if animated {
+        0.96 + (time as f32 * 1.4).sin() * 0.02
+    } else {
+        0.96
+    };
+    ui.painter().image(
+        texture.id(),
+        Rect::from_center_size(rect.center(), Vec2::splat(size * scale)),
+        Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)),
+        Color32::WHITE,
+    );
 }
 
-/// Stable block layout while streaming. Code blocks can be copied independently.
 pub fn markdown(ui: &mut Ui, text: &str, size: f32, color: Color32) {
-    let mut code: Option<(String, String)> = None;
-    for line in text.split('\n') {
-        if let Some(language) = line.strip_prefix("```") {
-            if let Some((language, body)) = code.take() {
-                code_block(ui, &language, &body);
-            } else {
-                code = Some((language.to_owned(), String::new()));
-            }
-        } else if let Some((_, body)) = &mut code {
-            body.push_str(line);
-            body.push('\n');
-        } else if line.is_empty() {
-            ui.add_space(5.0);
-        } else {
-            let heading = line
-                .strip_prefix("### ")
-                .or_else(|| line.strip_prefix("## "))
-                .or_else(|| line.strip_prefix("# "));
-            if let Some(heading) = heading {
-                ui.add_space(8.0);
-                ui.label(
-                    egui::RichText::new(heading)
-                        .size(size + 2.0)
-                        .strong()
-                        .color(TEXT),
-                );
-            } else {
-                ui.add(
-                    egui::Label::new(rich_inline(line, size, color))
-                        .wrap()
-                        .selectable(true),
-                );
-            }
-        }
-    }
-    if let Some((language, body)) = code {
-        code_block(ui, &language, &body);
-    }
-}
-
-fn code_block(ui: &mut Ui, language: &str, body: &str) {
-    egui::Frame::NONE
-        .fill(RAIL)
-        .corner_radius(9)
-        .stroke(Stroke::new(1.0, LINE))
-        .inner_margin(14)
-        .show(ui, |ui| {
-            ui.set_min_width((ui.available_width() - 1.0).max(0.0));
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(if language.is_empty() {
-                        "code"
-                    } else {
-                        language
-                    })
-                    .size(11.0)
-                    .color(MUTED),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if icon_button(ui, Icon::Copy, "Copy code", false, 24.0).clicked() {
-                        ui.ctx().copy_text(body.trim_end().into());
-                    }
-                });
-            });
-            ui.add_space(5.0);
-            egui::ScrollArea::horizontal()
-                .id_salt(ui.id().with(body.len()))
-                .show(ui, |ui| {
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(body.trim_end()).monospace().color(CODE),
-                        )
-                        .selectable(true),
-                    );
-                });
-        });
+    crate::markdown::show(ui, text, size, color);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn welcome_logo_uses_the_cached_hfx_asset_without_a_six_lobed_outline() {
+        let ctx = egui::Context::default();
+        install(&ctx, 14.0, true);
+        let mut texture_id = None;
+        for (index, size) in [44.0, 64.0, 44.0].into_iter().enumerate() {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                logo(ui, size, index as f64, false);
+            });
+            let uploaded = output.textures_delta.set.clone();
+            output.textures_delta.clear();
+            let texture = ctx
+                .data_mut(|data| {
+                    data.get_temp::<egui::TextureHandle>(egui::Id::new("hfx.brand-monogram"))
+                })
+                .expect("hfx monogram is cached");
+            if let Some(id) = texture_id {
+                assert_eq!(texture.id(), id);
+                assert!(!uploaded.iter().any(|(id, _)| *id == texture.id()));
+            } else {
+                texture_id = Some(texture.id());
+                let updates = &uploaded
+                    .iter()
+                    .find(|(id, _)| **id == texture.id())
+                    .expect("monogram pixels are uploaded")
+                    .1;
+                let egui::ImageData::Color(pixels) = &updates[0].image;
+                let source = image::load_from_memory(include_bytes!("../assets/hfx.png"))
+                    .unwrap()
+                    .into_rgba8();
+                let expected = egui::ColorImage::from_rgba_unmultiplied(
+                    [source.width() as usize, source.height() as usize],
+                    source.as_raw(),
+                );
+                assert!(
+                    pixels.pixels == expected.pixels,
+                    "uploaded pixels must match the premultiplied hfx asset"
+                );
+            }
+            assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Mesh(mesh) if mesh.texture_id == texture.id())));
+            assert!(
+                !output
+                    .shapes
+                    .iter()
+                    .any(|shape| matches!(&shape.shape, egui::Shape::Path(_)))
+            );
+        }
+    }
 
     #[test]
     fn inline_icons_share_label_centers_across_row_heights_and_display_scales() {

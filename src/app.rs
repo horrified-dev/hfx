@@ -4166,6 +4166,7 @@ impl Harness {
         if matches!(
             kind,
             "chat"
+                | "markdown"
                 | "reasoning"
                 | "approval"
                 | "actions"
@@ -4196,6 +4197,21 @@ impl Harness {
             );
             self.saved.chats[0].title = "Build a calmer workspace".into();
             self.saved.chats[0].messages = vec![user, assistant];
+            if kind == "markdown" {
+                self.saved.settings.show_reasoning = false;
+                self.saved.chats[0].title = "Markdown links".into();
+                self.saved.chats[0].messages[0].text =
+                    "Show a commit link without exposing its Markdown syntax.".into();
+                let message = &mut self.saved.chats[0].messages[1];
+                message.reasoning.clear();
+                message.text = "Commit: [`9e9b32d`](https://github.com/horrified-dev/hfx/commit/9e9b32d61e9cf50c9b5f598110fd40a8693111cb)\n— `docs: streamline README and add harness screenshots`\n\nLinks stay inline with **bold text**, `code`, and normal text.\n\nSee [the hfx repository](https://github.com/horrified-dev/hfx) for details.\n\nLiteral code stays literal: `[label](https://example.com)`".into();
+                for message in &self.saved.chats[0].messages {
+                    self.reveals.insert(
+                        message.id,
+                        (Reveal::complete(&message.text), Reveal::default()),
+                    );
+                }
+            }
             if matches!(kind, "images" | "image-viewer") {
                 let pixels = image::RgbaImage::from_fn(960, 540, |x, y| {
                     let grid = x % 96 == 0 || y % 54 == 0;
@@ -5563,6 +5579,8 @@ mod tests {
     #[ignore = "writes headless visual QA artifacts"]
     fn export_headless_previews() {
         for (preview, width, height) in [
+            ("markdown", 1180, 820),
+            ("markdown", 720, 540),
             ("agent-tools", 1180, 820),
             ("agent-tools", 720, 540),
             ("web-tools", 1180, 820),
@@ -6065,6 +6083,7 @@ mod tests {
         for preview in [
             "welcome",
             "chat",
+            "markdown",
             "settings",
             "codex",
             "openrouter",

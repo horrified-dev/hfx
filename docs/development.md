@@ -20,7 +20,7 @@ The tests cover:
 - **Authentication:** credential serialization, PKCE against the RFC test vector, callback/state validation, code exchange, refresh-token rotation, HTTP 401 retry, and cancellation.
 - **Tools and security:** paged file reads, workspace and optional sandbox boundaries, bounded command output, durable partial logs, process-group cancellation, Git pushes with preserved host identity/SSH setup, and web search/fetch with source replay.
 - **Conversation state:** 75% context thresholds, bounded summaries, tool-safe compaction and checkpoint replay, summary failure safety, FIFO queues, safe-boundary steering, attachment replay, paused queue recovery, and interrupted-turn recovery.
-- **Images and UI:** image tool round trips, image-only replies, saved image context, keyboard handling, project/rename validation, chronological tool groups, independent disclosures, icon alignment, and layouts at two window sizes.
+- **Images and UI:** Markdown link rendering, wrapped/Unicode link hit regions, click/keyboard activation, text-selection safety, hfx monogram reuse, image tool round trips, image-only replies, saved image context, keyboard handling, project/rename validation, chronological tool groups, independent disclosures, icon alignment, and layouts at two window sizes.
 - **Lifecycle and desktop integration:** background saves with large histories, hidden-window logic, question timeouts, bounded event draining, Linux nonblocking VSync, localized launcher paths and ownership, installer updates, data-preserving uninstall, completion-alert batching and helper timeouts, final-save fences, bounded cleanup, atomic PNG export, and Git attribution settings/instructions.
 
 Auth and provider tests use local Rust HTTP fixtures; they perform no real sign-in or model requests.
@@ -48,7 +48,7 @@ cargo run --locked -- --preview=images
 cargo run --locked -- --preview=image-viewer
 ```
 
-Other previews: `reasoning`, `appearance`, `menu`, `codex`, `openrouter`, and `git-attribution`.
+Other previews: `markdown`, `reasoning`, `appearance`, `menu`, `codex`, `openrouter`, and `git-attribution`. The [Markdown preview](../artifacts/markdown-preview.png) demonstrates commit links, formatted labels, and literal code.
 
 ### Refresh README screenshots
 
@@ -100,9 +100,10 @@ See [Shutdown and diagnostics](usage.md#shutdown-and-diagnostics) for tracing an
 - [`src/notifications.rs`](../src/notifications.rs): nonblocking completion notifications and quiet audio playback.
 - [`scripts/`](../scripts/): per-user Linux installer/uninstaller and portable bundle builder.
 - [`src/state.rs`](../src/state.rs): persisted models, provider settings, interrupted-turn recovery.
-- [`src/theme.rs`](../src/theme.rs): palette, vector icons, styled controls, lightweight Markdown rendering.
+- [`src/theme.rs`](../src/theme.rs): palette, hfx monogram, vector icons, and styled controls.
+- [`src/markdown.rs`](../src/markdown.rs): selectable Markdown, inline link parsing, wrapped link hit regions, and code-block copy controls.
 
-The Markdown view supports headings, bold spans, inline code, fenced code with copy controls, and selectable text. It is intentionally lightweight; full CommonMark tables and inline Markdown images are not yet implemented. Use `send_image` to return images as clickable thumbnails.
+The Markdown view supports headings, bold spans, inline code, clickable HTTP/HTTPS links (including formatted link labels), fenced code with copy controls, and selectable text. Links open only after a click or keyboard activation; unsupported URL schemes and credential-bearing links are not activated. It is intentionally lightweight; full CommonMark tables and inline Markdown images are not yet implemented. Use `send_image` to return images as clickable thumbnails.
 
 ## Protocol references
 

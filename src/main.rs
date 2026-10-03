@@ -8,6 +8,7 @@ mod file_read;
 mod lifecycle;
 #[cfg(target_os = "linux")]
 mod linux_desktop;
+mod markdown;
 mod motion;
 mod notifications;
 mod persistence;
