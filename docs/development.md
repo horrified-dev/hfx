@@ -32,7 +32,7 @@ cargo build --release --locked
 python3 tests/linux_install.py target/release/hfx
 ```
 
-### macOS and Windows installer checks
+### macOS installer checks
 
 All installer fixtures keep install paths and application data in a temporary directory under `target`; they do not install into your actual profile.
 
@@ -44,16 +44,7 @@ python3 tests/macos_install.py target/release/hfx
 
 The macOS filesystem tests also run on Linux with a fixture `uname`; that does **not** validate Finder/Launch Services or a native macOS build.
 
-```powershell
-# On Windows, with real WScript.Shell shortcuts:
-.\tests\windows_install.ps1 -Binary .\target\release\hfx.exe
-# Parser/filesystem helpers only (PowerShell 7 works on Linux):
-pwsh -NoProfile -File tests/windows_install.ps1 -HelpersOnly
-# Non-Windows filesystem/update/uninstall QA with mocked shortcut metadata:
-pwsh -NoProfile -File tests/windows_install.ps1 -MockWindows
-```
-
-Mock Windows checks do not validate native COM shortcuts or Windows file locking. [Native installer CI](../.github/workflows/installers.yml) builds on macOS/Windows and runs native bundle/shortcut checks; Windows is checked with both PowerShell 5.1 and PowerShell 7. A local mock run is not evidence that those CI jobs have passed.
+[Native macOS installer CI](../.github/workflows/installers.yml) builds on macOS and validates the installed bundle, icon, and executable. Local Linux fixture runs do not replace these native checks.
 
 ## Scripted previews
 
@@ -121,7 +112,7 @@ See [Shutdown and diagnostics](usage.md#shutdown-and-diagnostics) for tracing an
 - [`src/motion.rs`](../src/motion.rs): frame-paced text reveal and easing.
 - [`src/linux_desktop.rs`](../src/linux_desktop.rs): Linux first-launch/CLI desktop registration, icons, and safe launcher removal.
 - [`src/notifications.rs`](../src/notifications.rs): nonblocking completion notifications and quiet audio playback.
-- [`scripts/`](../scripts/): per-user Linux/macOS/Windows installers and uninstallers, shared ownership helpers, and the Linux portable bundle builder.
+- [`scripts/`](../scripts/): per-user Linux/macOS installers and uninstallers, shared ownership helpers, and the Linux portable bundle builder.
 - [`src/state.rs`](../src/state.rs): persisted models, provider settings, interrupted-turn recovery.
 - [`src/theme.rs`](../src/theme.rs): palette, hfx monogram, vector icons, and styled controls.
 - [`src/markdown.rs`](../src/markdown.rs): selectable Markdown, inline link parsing, wrapped link hit regions, and code-block copy controls.

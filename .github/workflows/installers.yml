@@ -1,4 +1,4 @@
-name: Native installer checks
+name: macOS installer checks
 
 on:
   push:
@@ -22,33 +22,3 @@ jobs:
         run: /bin/bash -n scripts/install-macos.sh scripts/uninstall-macos.sh scripts/macos-common.sh
       - name: Check macOS installer and native bundle
         run: python3 tests/macos_install.py target/release/hfx
-
-  windows:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Build native Windows executable
-        run: cargo build --release --locked
-      - name: Check installer with Windows PowerShell 5.1 and real shortcuts
-        shell: powershell
-        run: |
-          try {
-            ./tests/windows_install.ps1 -Binary target/release/hfx.exe
-          } catch {
-            $details = ($_ | Out-String) + "`n" + $_.ScriptStackTrace
-            $escaped = $details.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
-            Write-Output "::error title=Windows installer diagnostic::$escaped"
-            throw
-          }
-      - name: Check installer with PowerShell 7 and real shortcuts
-        shell: pwsh
-        run: |
-          try {
-            ./tests/windows_install.ps1 -Binary target/release/hfx.exe
-          } catch {
-            $details = ($_ | Out-String) + "`n" + $_.ScriptStackTrace
-            $escaped = $details.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
-            Write-Output "::error title=Windows installer diagnostic::$escaped"
-            throw
-          }
