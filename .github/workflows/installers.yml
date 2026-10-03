@@ -32,7 +32,23 @@ jobs:
         run: cargo build --release --locked
       - name: Check installer with Windows PowerShell 5.1 and real shortcuts
         shell: powershell
-        run: ./tests/windows_install.ps1 -Binary target/release/hfx.exe
+        run: |
+          try {
+            ./tests/windows_install.ps1 -Binary target/release/hfx.exe
+          } catch {
+            $details = ($_ | Out-String) + "`n" + $_.ScriptStackTrace
+            $escaped = $details.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Output "::error title=Windows installer diagnostic::$escaped"
+            throw
+          }
       - name: Check installer with PowerShell 7 and real shortcuts
         shell: pwsh
-        run: ./tests/windows_install.ps1 -Binary target/release/hfx.exe
+        run: |
+          try {
+            ./tests/windows_install.ps1 -Binary target/release/hfx.exe
+          } catch {
+            $details = ($_ | Out-String) + "`n" + $_.ScriptStackTrace
+            $escaped = $details.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Output "::error title=Windows installer diagnostic::$escaped"
+            throw
+          }
