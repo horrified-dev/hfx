@@ -103,6 +103,9 @@ pub struct Settings {
     #[serde(skip)]
     pub brave_search_key: String,
     pub review_actions: bool,
+    /// Explicit user configuration only; never loaded from an untrusted project.
+    pub mcp_enabled: bool,
+    pub mcp_config: String,
     pub reduced_motion: bool,
     pub desktop_notifications: bool,
     pub completion_sound: bool,
@@ -147,6 +150,8 @@ impl Default for Settings {
             searxng_url: String::new(),
             brave_search_key: String::new(),
             review_actions: false,
+            mcp_enabled: false,
+            mcp_config: "{\n  \"mcpServers\": {}\n}".into(),
             reduced_motion: false,
             desktop_notifications: true,
             completion_sound: true,

@@ -104,17 +104,18 @@ pub struct ToolCall {
 impl ToolCall {
     pub fn needs_approval(&self, review_actions: bool) -> bool {
         review_actions
-            && matches!(
-                self.name.as_str(),
-                "read_file"
-                    | "list_files"
-                    | "view_image"
-                    | "send_image"
-                    | "write_file"
-                    | "run_command"
-                    | "web_search"
-                    | "web_fetch"
-            )
+            && (crate::mcp::is_tool(&self.name)
+                || matches!(
+                    self.name.as_str(),
+                    "read_file"
+                        | "list_files"
+                        | "view_image"
+                        | "send_image"
+                        | "write_file"
+                        | "run_command"
+                        | "web_search"
+                        | "web_fetch"
+                ))
     }
 }
 

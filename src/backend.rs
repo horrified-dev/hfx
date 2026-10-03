@@ -1,5 +1,5 @@
 use crate::{
-    attachments, context,
+    attachments, context, mcp,
     state::{ActionStatus, Attachment, AttachmentContent, Message, Provider, Settings},
     tools::{self, ToolCall},
 };
@@ -833,6 +833,8 @@ async fn agent(
         },
         settings.git_coauthor_trailer()
     );
+    let instructions = format!("{instructions}\n\n{}", mcp::INSTRUCTIONS);
+    let mcp_session = mcp::Session::connect(&settings, &request.workspace).await?;
     let replayable = request
         .history
         .iter()
@@ -850,7 +852,9 @@ async fn agent(
     let mut context = Vec::new();
     let limit = settings.context_limit();
     let tool_definitions = if settings.tools_enabled {
-        tools::definitions_for(&settings, openai)
+        let mut definitions = tools::definitions_for(&settings, openai);
+        definitions.extend(mcp_session.definitions(openai));
+        definitions
     } else {
         Vec::new()
     };
@@ -1182,10 +1186,13 @@ async fn agent(
             remaining_reads -= batch.iter().filter(|call| call.name == "read_file").count();
             let allow_sent_image = returned_images < attachments::MAX_ATTACHMENTS;
             let mut results = futures_util::stream::iter(batch.into_iter().map(|call| {
-                execute_call(
-                    &request.workspace,
+                execute_call_in(
+                    ToolContext {
+                        root: &request.workspace,
+                        settings: &settings,
+                        mcp: &mcp_session,
+                    },
                     call,
-                    &settings,
                     tx,
                     openai,
                     read_budget,
@@ -1229,15 +1236,25 @@ fn parallel_read(call: &ToolCall) -> bool {
     )
 }
 
-async fn execute_call(
-    root: &std::path::Path,
+struct ToolContext<'a> {
+    root: &'a std::path::Path,
+    settings: &'a Settings,
+    mcp: &'a mcp::Session,
+}
+
+async fn execute_call_in(
+    environment: ToolContext<'_>,
     call: ToolCall,
-    settings: &Settings,
     tx: &Sender<Event>,
     openai: bool,
     read_budget: usize,
     allow_sent_image: bool,
 ) -> Result<(Vec<Value>, usize), String> {
+    let ToolContext {
+        root,
+        settings,
+        mcp,
+    } = environment;
     let _ = tx.send(Event::ToolStarted(call.clone()));
     let approved = if call.needs_approval(settings.review_actions) {
         let (reply, receive) = oneshot::channel();
@@ -1284,14 +1301,13 @@ async fn execute_call(
         }
     } else {
         let _ = tx.send(Event::ToolRunning(call.id.clone()));
-        match tools::execute_with_read_budget(
-            root.to_path_buf(),
-            call.clone(),
-            settings,
-            read_budget,
-        )
-        .await
-        {
+        let result = if mcp::is_tool(&call.name) {
+            mcp.execute(&call).await
+        } else {
+            tools::execute_with_read_budget(root.to_path_buf(), call.clone(), settings, read_budget)
+                .await
+        };
+        match result {
             Ok(result) => result,
             Err(error) => tools::ToolOutput {
                 text: format!("Tool failed: {error}"),
@@ -1315,6 +1331,31 @@ async fn execute_call(
         show_in_reply,
     });
     Ok((items, returned_images))
+}
+
+#[cfg(test)]
+async fn execute_call(
+    root: &std::path::Path,
+    call: ToolCall,
+    settings: &Settings,
+    tx: &Sender<Event>,
+    openai: bool,
+    read_budget: usize,
+    allow_sent_image: bool,
+) -> Result<(Vec<Value>, usize), String> {
+    execute_call_in(
+        ToolContext {
+            root,
+            settings,
+            mcp: &mcp::Session::default(),
+        },
+        call,
+        tx,
+        openai,
+        read_budget,
+        allow_sent_image,
+    )
+    .await
 }
 
 fn output_reserve(settings: &Settings) -> u64 {
@@ -1687,7 +1728,7 @@ async fn demo(tx: &Sender<Event>) {
 mod tests {
     use super::*;
 
-    fn text_completion(provider: Provider, text: &str, input_tokens: u64) -> String {
+    pub(super) fn text_completion(provider: Provider, text: &str, input_tokens: u64) -> String {
         if matches!(provider, Provider::OpenAI | Provider::Codex) {
             sse(&[
                 json!({"type":"response.output_text.delta","delta":text}),
@@ -2995,7 +3036,7 @@ mod tests {
         }
     }
 
-    fn mock_server(
+    pub(super) fn mock_server(
         responses: Vec<String>,
     ) -> (
         String,
@@ -3074,7 +3115,7 @@ mod tests {
         (url, rx, server)
     }
 
-    fn sse(values: &[Value]) -> String {
+    pub(super) fn sse(values: &[Value]) -> String {
         values.iter().map(|v| format!("data: {v}\n\n")).collect()
     }
 
@@ -4448,3 +4489,7 @@ mod tests {
         assert!(matches!(rx.recv().unwrap(),Event::ModelTime(seconds) if seconds>=0.0));
     }
 }
+
+#[cfg(test)]
+#[path = "backend_mcp_tests.rs"]
+mod mcp_tests;

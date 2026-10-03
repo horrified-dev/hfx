@@ -10,6 +10,7 @@ A native coding harness built with **Rust + egui**. Work with **Codex, OpenAI AP
 
 - **One interface, four providers.** Sign in with your ChatGPT account, use an API key, or connect a local llama.cpp server. Demo mode works without credentials.
 - **Project-aware conversations.** Keep separate chats and drafts for each project; attach code, files, and images by picker, paste, or drag-and-drop.
+- **MCP integrations.** Connect explicitly configured local stdio or remote Streamable HTTP servers; their tools share the action history and optional review flow. See [MCP setup](docs/mcp.md).
 - **Workspace tools.** Read and edit files, run commands, search the web, and return images. Expand the action history to inspect results, timings, and recorded edit diffs.
 - **Queue and steer.** Queue follow-ups while a reply runs, or guide the active run at the next safe model/tool boundary.
 - **Long-running context.** Automatic compaction summarizes older context at 75% of the configured model window without deleting the visible conversation.
@@ -107,6 +108,7 @@ Use **Ctrl** on Linux/Windows and **Cmd** on macOS.
 | --- | --- |
 | [Provider setup](docs/providers.md) | Codex sign-in, API keys, compatible endpoints, llama.cpp, and provider capabilities |
 | [Using hfx](docs/usage.md) | Projects, attachments, queueing, steering, context compaction, persistence, and clean shutdown |
+| [MCP servers](docs/mcp.md) | Local and remote server configuration, discovery, authentication, approvals, and security |
 | [Tools & security](docs/tools.md) | Tool reference, review mode, trusted commands, strict sandboxing, Git authentication/attribution, and web research |
 | [macOS installation](docs/macos.md) | Per-user app bundle, CLI/Desktop links, updates, security prompts, and data-preserving uninstall |
 | [Linux integration](docs/linux.md) | Per-user installation, desktop launchers, portable bundles, completion alerts, and background rendering |

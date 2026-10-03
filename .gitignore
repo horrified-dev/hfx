@@ -30,3 +30,6 @@ rustc-ice-*.txt
 .env
 codex-auth.json
 .codex-auth-*.tmp
+
+# Generated Blender MCP scenes, renders, installation references, and transcripts
+/artifacts/blender-mcp/

@@ -19,6 +19,7 @@ The tests cover:
 - **Providers and protocols:** fragmented Unicode/SSE, streamed and parallel tool calls, sparse terminal output, incomplete-response execution guards, fourteen tool rounds, replay across all four adapters, and legacy action context.
 - **Authentication:** credential serialization, PKCE against the RFC test vector, callback/state validation, code exchange, refresh-token rotation, HTTP 401 retry, and cancellation.
 - **Tools and security:** paged file reads, workspace and optional sandbox boundaries, bounded command output, durable partial logs, process-group cancellation, Git pushes with preserved host identity/SSH setup, and web search/fetch with source replay.
+- **MCP:** explicit opt-in, configuration validation, collision-safe names, paginated discovery, stdio lifecycle, Streamable HTTP JSON/SSE, environment-based auth, timeouts without retries, images/structured results, and approvals with replay through every provider.
 - **Conversation state:** 75% context thresholds, bounded summaries, tool-safe compaction and checkpoint replay, summary failure safety, FIFO queues, safe-boundary steering, attachment replay, paused queue recovery, and interrupted-turn recovery.
 - **Images and UI:** Markdown link rendering, wrapped/Unicode link hit regions, click/keyboard activation, text-selection safety, hfx monogram reuse, image tool round trips, image-only replies, saved image context, keyboard handling, project/rename validation, chronological tool groups, independent disclosures, icon alignment, and layouts at two window sizes.
 - **Lifecycle and desktop integration:** background saves with large histories, hidden-window logic, question timeouts, bounded event draining, Linux nonblocking VSync, localized launcher paths and ownership, installer updates, data-preserving uninstall, completion-alert batching and helper timeouts, final-save fences, bounded cleanup, atomic PNG export, and Git attribution settings/instructions.
@@ -119,6 +120,14 @@ disabled preferences, and the fixed footer while scrolling.
 
 See [Shutdown and diagnostics](usage.md#shutdown-and-diagnostics) for tracing and a synthetic-history I/O benchmark that does not read user history.
 
+## Blender MCP live demonstration
+
+The opt-in [Blender demonstration](blender-mcp.md) exercises the actual Rust MCP client against a running local Blender GUI, including discovery, modeling, viewport image decoding, rendering, and scene inspection. It is ignored in normal test runs; it deliberately modifies only a new or previously generated demo scene and writes ignored artifacts. After following that guide:
+
+```bash
+cargo test --locked demo_blender_mcp -- --ignored --nocapture
+```
+
 ## Source map
 
 - [`src/app.rs`](../src/app.rs): native shell, panels, conversation, settings, approvals, lifecycle.
@@ -130,6 +139,8 @@ See [Shutdown and diagnostics](usage.md#shutdown-and-diagnostics) for tracing an
 - [`src/sandbox.rs`](../src/sandbox.rs): trusted host command setup and optional Linux confinement/private Cargo cache overlays.
 - [`src/commands.rs`](../src/commands.rs): configurable command deadlines, process-group cancellation, beginning/tail output and durable private logs.
 - [`src/web.rs`](../src/web.rs): provider-independent search/fetch, readable HTML extraction, source URLs and bounded anonymous HTTP requests.
+- [`src/mcp.rs`](../src/mcp.rs): opt-in MCP connections, stdio process ownership, Streamable HTTP, schema mapping, and tool results.
+- [`src/mcp_ui.rs`](../src/mcp_ui.rs): native JSON configuration editor and cancellable discovery tests.
 - [`src/persistence.rs`](../src/persistence.rs): buffered/coalesced background chat serialization, durable final flush, and atomic storage.
 - [`src/lifecycle.rs`](../src/lifecycle.rs): bounded async/background runtime cleanup and optional shutdown timing diagnostics.
 - [`src/attachments.rs`](../src/attachments.rs): bounded file loading, clipboard/file URI handling, image normalization, and thumbnails.

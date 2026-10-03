@@ -9,6 +9,8 @@ mod lifecycle;
 #[cfg(target_os = "linux")]
 mod linux_desktop;
 mod markdown;
+mod mcp;
+mod mcp_ui;
 mod motion;
 mod notifications;
 mod persistence;

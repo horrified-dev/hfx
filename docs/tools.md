@@ -75,6 +75,10 @@ background server survives sandbox exit. There is no fallback to trusted mode.
 
 Search queries are sent to the selected service. Fetch makes anonymous HTTP/HTTPS GET requests, including to local documentation servers, follows up to five redirects, supports gzip and declared text charsets, and returns readable text plus source links. It sends no model-provider credentials or browser cookies and does not execute JavaScript. Downloads are bounded to 2 MiB and returned content to 20,000 characters, with truncation indicated. Binary/PDF downloads and JavaScript-only browsing are not supported. Web content is untrusted reference data, never instructions; the assistant is told to verify relevant sources and cite their actual URLs. Expanded web actions include clickable source links. The web toggle controls these native tools, not a network firewall for shell commands.
 
+### MCP servers
+
+Optional [MCP support](mcp.md) connects external stdio and Streamable HTTP servers for all inference providers. Configure and test servers in **Settings → Tools → MCP servers**; MCP is off by default and no project configuration is auto-loaded. Discovered tools appear in the action history and every call requires approval in review mode, regardless of server annotations. External servers are not constrained by native file-tool paths; local servers inherit host access, and remote servers receive tool arguments. MCP is blocked in strict sandbox mode. See the [MCP guide](mcp.md) for configuration, secret references, limits, and unsupported features.
+
 ### Tool responsiveness
 
 Contiguous independent `read_file`, `list_files`, `web_search`, and `web_fetch` calls run up to four at a time when review is off. Their protocol results retain the model's original ordering. Commands, writes, questions, images, and all reviewed actions remain sequential barriers; a read after a write sees the completed write. No tool runs on a partial/unsuccessful model turn.

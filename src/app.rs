@@ -276,6 +276,7 @@ pub struct Harness {
     view_started: f64,
     style_key: (f32, bool),
     probe_rx: Option<Receiver<Result<Vec<backend::ModelInfo>, String>>>,
+    mcp_probe: crate::mcp_ui::Probe,
     probe_result: Option<Result<Vec<backend::ModelInfo>, String>>,
     probe_config: String,
     auth_rx: Option<Receiver<AuthEvent>>,
@@ -374,6 +375,7 @@ impl Harness {
             view_started: -100.0,
             style_key,
             probe_rx: None,
+            mcp_probe: Default::default(),
             probe_result: None,
             probe_config: String::new(),
             auth_rx: None,
@@ -985,6 +987,7 @@ impl Harness {
         if animating {
             ctx.request_repaint_after(interval);
         }
+        self.mcp_probe.poll(ctx, interval);
         if let Some(rx) = &self.probe_rx {
             if let Ok(result) = rx.try_recv() {
                 self.probe_result = Some(result);
@@ -2022,6 +2025,9 @@ impl Harness {
             if activities.iter().any(|a| a.name == name) {
                 kinds.push(label);
             }
+        }
+        if activities.iter().any(|a| crate::mcp::is_tool(&a.name)) {
+            kinds.push("MCP tools");
         }
         egui::CollapsingHeader::new(
             RichText::new(if kinds.is_empty() {
@@ -3196,7 +3202,7 @@ impl Harness {
                     ui,
                     &mut self.saved.settings.review_actions,
                     "Review each tool action",
-                    "Approve file, command, and web actions first.",
+                    "Approve file, command, web, and MCP actions first.",
                 );
             });
             let (status, color, explanation) = if !self.saved.settings.tools_enabled {
@@ -3209,7 +3215,7 @@ impl Harness {
                 (
                     "REVIEW MODE",
                     prefs::AMBER,
-                    "Workspace and web actions wait for approval. Questions use their own 30-second recommendation timer.",
+                    "Workspace, web, and MCP actions wait for approval. Questions use their own 30-second recommendation timer.",
                 )
             } else {
                 (
@@ -3223,6 +3229,9 @@ impl Harness {
             prefs::help(ui, explanation);
         });
         self.command_and_web_settings(ui);
+        let root = PathBuf::from(&self.project().path);
+        self.mcp_probe
+            .show(ui, &mut self.saved.settings, root, &self.runtime);
         self.git_attribution_settings(ui);
         prefs::card(ui, "instructions", |ui| {
             prefs::heading(
@@ -4211,7 +4220,9 @@ impl Harness {
             let mut decision = None;
             egui::Modal::new(Id::new("tool_approval")).show(ctx, |ui| {
                 ui.set_width(ctx.content_rect().width().min(700.0) - 80.0);
-                ui.heading(if matches!(pending.call.name.as_str(), "web_search" | "web_fetch") {
+                ui.heading(if crate::mcp::is_tool(&pending.call.name) {
+                    "Review MCP tool call"
+                } else if matches!(pending.call.name.as_str(), "web_search" | "web_fetch") {
                     "Review web request"
                 } else if pending.call.name == "write_file" {
                     "Review file change"
@@ -4228,7 +4239,13 @@ impl Harness {
                 ui.add_space(12.0);
                 let args: serde_json::Value =
                     serde_json::from_str(&pending.call.arguments).unwrap_or_default();
-                if pending.call.name == "write_file" {
+                if crate::mcp::is_tool(&pending.call.name) {
+                    ui.label(RichText::new(&pending.call.name).color(theme::ACCENT));
+                    ui.label("External server action: may access files or services outside this project.");
+                    ScrollArea::vertical().id_salt("mcp_review_arguments").max_height(300.0).show(ui, |ui| {
+                        ui.add(egui::Label::new(RichText::new(&pending.call.arguments).monospace()).wrap().selectable(true));
+                    });
+                } else if pending.call.name == "write_file" {
                     ui.label(
                         RichText::new(args["path"].as_str().unwrap_or("Unknown file"))
                             .color(theme::ACCENT),
@@ -4279,7 +4296,9 @@ impl Harness {
                         decision = Some(false);
                     }
                     if ui
-                        .button(if pending.call.name == "write_file" {
+                        .button(if crate::mcp::is_tool(&pending.call.name) {
+                            "Approve MCP call"
+                        } else if pending.call.name == "write_file" {
                             "Approve and write"
                         } else if pending.call.name == "run_command" {
                             "Approve and run"
