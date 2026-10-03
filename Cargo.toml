@@ -1,0 +1,45 @@
+[package]
+name = "hfx"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+description = "A native, animated coding harness for Codex, OpenAI, OpenRouter, and llama.cpp"
+license = "MIT"
+
+[features]
+screenshot = ["eframe/__screenshot"]
+
+[dependencies]
+arboard = { version = "3.6", features = ["wayland-data-control"] }
+base64 = "0.22"
+eframe = { version = "=0.36.1", default-features = false, features = ["default_fonts", "glow", "wayland", "x11", "persistence", "links"] }
+futures-util = "0.3"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "gzip"] }
+ring = "0.17"
+rfd = "0.17"
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = "1"
+similar = "3.2"
+scraper = "0.24"
+encoding_rs = "0.8"
+libc = "0.2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "process", "io-util", "net"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[patch.crates-io]
+# Preserve paste attempts with no text, so screenshots/files can reach the app.
+egui-winit = { path = "vendor/egui-winit" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+wl-clipboard-rs = "0.9"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+clipboard-win = "5.4"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+strip = true

@@ -1,0 +1,7 @@
+Fixture global Git identity outside sandbox: Human Fixture
+Git identity inside sandbox: <missing>
+SSH_AUTH_SOCK inside sandbox: absent
+HTTPS tool installed: /usr/bin/curl
+
+No real Git configuration, SSH keys, remote repositories, or credentials were read/changed.
+This uses the same base filesystem/environment boundaries as src/sandbox.rs (no Cargo mounts).

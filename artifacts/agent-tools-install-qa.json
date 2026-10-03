@@ -1,0 +1,31 @@
+{
+  "status": "passed",
+  "package_binary_matches_release": true,
+  "fixture_only": true,
+  "commands": [
+    {
+      "command": [
+        "./scripts/install-linux.sh",
+        "--no-build",
+        "--desktop-shortcut"
+      ],
+      "stdout": "Desktop shortcut: /workspace/target/agent-tools-install-qa-szmhmn8s/home/Desktop/hfx.desktop\nApplication launcher: /workspace/target/agent-tools-install-qa-szmhmn8s/data/applications/hfx.desktop\n\nInstalled hfx: /workspace/target/agent-tools-install-qa-szmhmn8s/bin/hfx\nFind \u201chfx\u201d in your application menu and pin it to your dock.\nYour desktop may require right-click \u2192 Allow Launching (and a desktop-icons extension on GNOME).\nFor terminal launching, add /workspace/target/agent-tools-install-qa-szmhmn8s/bin to PATH.\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "./scripts/install-linux.sh",
+        "--no-build"
+      ],
+      "stdout": "Desktop shortcut: /workspace/target/agent-tools-install-qa-szmhmn8s/home/Desktop/hfx.desktop\nApplication launcher: /workspace/target/agent-tools-install-qa-szmhmn8s/data/applications/hfx.desktop\n\nInstalled hfx: /workspace/target/agent-tools-install-qa-szmhmn8s/bin/hfx\nFind \u201chfx\u201d in your application menu and pin it to your dock.\nFor terminal launching, add /workspace/target/agent-tools-install-qa-szmhmn8s/bin to PATH.\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "./scripts/uninstall-linux.sh"
+      ],
+      "stdout": "hfx uninstalled. Saved chats, preferences, credentials, and workspace files were preserved.\n",
+      "stderr": ""
+    }
+  ]
+}

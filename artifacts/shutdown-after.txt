@@ -1,0 +1,9 @@
+
+running 1 test
+writer buffered=false: 324.48ms, 786916 writes, 4327096 bytes
+writer buffered=true: 109.65ms, 67 writes, 4327096 bytes
+exit flush with active + queued saves: 210.55ms
+test persistence::tests::profile_shutdown_save_io ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 113 filtered out; finished in 0.71s
+
