@@ -46,10 +46,10 @@ impl CommandMode {
     pub fn instructions(self) -> &'static str {
         match self {
             Self::Trusted => {
-                "Shell commands run on the host as the current user in the selected project, not in a filesystem sandbox. They inherit the normal HOME, PATH, Git configuration, SSH agent/keys, credential helpers, network and desktop environment available to hfx. Git fetch/push are permitted when part of the user's task; use the configured authentication normally instead of inventing sandbox workarounds. Commands can access files outside the project, so keep changes scoped to the user's task. No extra privilege or sudo is granted. stdin is non-interactive: if real authentication is missing, explain the specific login/setup needed instead of repeatedly retrying alternative transports or weakening SSH host verification."
+                "Shell commands run on the host as the current user in the selected project, not in a filesystem sandbox. They inherit the host environment available to hfx, including HOME, PATH, CARGO_HOME, RUSTUP_HOME, language/toolchain and package-manager configuration/caches, temporary storage, Git identity/configuration, SSH agent/keys, credential helpers, API keys, proxy/TLS settings, network/localhost and desktop/GPU access. Run normal build, test, run, debug and package-manager commands using this supplied environment; installed tools and ordinary OS permissions still apply. Do not invent sandbox workarounds: do not override HOME, CARGO_HOME, RUSTUP_HOME, TMPDIR or XDG/cache settings, redirect host caches/credentials into .hfx, add --offline, disable networking, or create substitute environments merely because you assume confinement. Respect existing project configuration and explicit user requests; only change the environment to address a verified task-specific need. Git fetch/push are permitted when part of the user's task; use the configured authentication normally. File/image tool path restrictions do not apply to shell commands: when the task needs host paths, use run_command directly without copying host files into the workspace just to access them. Native anonymous web-tool limitations do not restrict shell networking or authenticated CLI tools. Commands can access files outside the project, so keep access and changes scoped to the user's task. Do not print or expose credentials. No extra privilege or sudo is granted. stdin is non-interactive: if real authentication or a tool is missing, explain the specific login/setup needed instead of assuming sandbox restrictions, repeatedly retrying alternative transports or weakening SSH host verification."
             }
             Self::Sandbox => {
-                "Shell commands run in a strict Linux filesystem sandbox with only this project writable and private temporary storage. Network access is enabled, but host Git login configuration, SSH credentials/agent and desktop connections are intentionally absent. If a task needs those capabilities, report the limitation and the Trusted host commands setting; do not waste repeated attempts trying to bypass the selected sandbox. /tmp is private to each command; use workspace paths for durable files."
+                "Shell commands run in a strict Linux filesystem sandbox with only this project writable and private temporary storage. Network access is enabled, but host Git login configuration, SSH credentials/agent and desktop connections are intentionally absent. Run Cargo normally with the supplied environment; Cargo cache setup is handled automatically by the command runner. Do not override CARGO_HOME/RUSTUP_HOME or add --offline merely because this mode is sandboxed; respect project configuration and explicit user requests. If a task needs host capabilities that are hidden, report the limitation and the Trusted host commands setting; do not waste repeated attempts trying to bypass the selected sandbox. /tmp is private to each command; use workspace paths for durable files."
             }
         }
     }
@@ -880,6 +880,31 @@ mod tests {
         assert!(!restored.web_enabled);
         assert_eq!(restored.command_timeout(), 7200);
         assert_eq!(restored.search_provider, SearchProvider::Searxng);
+    }
+
+    #[test]
+    fn command_instructions_distinguish_host_access_from_file_tool_boundaries() {
+        let trusted = CommandMode::Trusted.instructions();
+        for guidance in [
+            "not in a filesystem sandbox",
+            "CARGO_HOME",
+            "RUSTUP_HOME",
+            "package-manager",
+            "Do not invent sandbox workarounds",
+            "--offline",
+            "File/image tool path restrictions do not apply to shell commands",
+            "API keys",
+        ] {
+            assert!(
+                trusted.contains(guidance),
+                "Missing trusted guidance: {guidance}"
+            );
+        }
+        let sandbox = CommandMode::Sandbox.instructions();
+        assert!(sandbox.contains("strict Linux filesystem sandbox"));
+        assert!(sandbox.contains("Cargo cache setup is handled automatically"));
+        assert!(sandbox.contains("Network access is enabled"));
+        assert!(!sandbox.contains("not in a filesystem sandbox"));
     }
 
     #[test]

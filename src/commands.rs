@@ -217,16 +217,9 @@ async fn execute_for(
         .stderr(std::process::Stdio::piped());
     #[cfg(unix)]
     process.process_group(0);
-    // Preserve Git/SSH/proxy/session setup, but don't deliberately forward the
-    // inference/search API keys. Trusted mode is NOT a secret-isolation boundary.
-    for name in [
-        "OPENAI_API_KEY",
-        "OPENROUTER_API_KEY",
-        "LLAMA_API_KEY",
-        "BRAVE_SEARCH_API_KEY",
-    ] {
-        process.env_remove(name);
-    }
+    // Trusted commands inherit the full host environment, including credentials
+    // used by the user's own CLIs/tests. Settings-only keys are not injected.
+    // Strict mode already clears the environment in sandbox::command.
     process.env("GIT_TERMINAL_PROMPT", "0");
     // Diagnostics are best-effort: a read-only project or unsafe .hfx link
     // must not prevent an otherwise valid trusted command from running.
@@ -344,6 +337,141 @@ async fn execute_for(
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn trusted_commands_preserve_the_inherited_host_environment() {
+        // Launch this one test in a child with a fixture environment. Never
+        // mutate the test runner's global environment or print real secrets.
+        const FIXTURE: &str = "HFX_TRUSTED_ENV_FIXTURE";
+        const VARIABLES: &[&str] = &[
+            "HOME",
+            "CARGO_HOME",
+            "RUSTUP_HOME",
+            "TMPDIR",
+            "XDG_CONFIG_HOME",
+            "XDG_CACHE_HOME",
+            "PIP_CACHE_DIR",
+            "npm_config_cache",
+            "SSH_AUTH_SOCK",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "SSL_CERT_FILE",
+            "DISPLAY",
+            "WAYLAND_DISPLAY",
+            "GIT_AUTHOR_NAME",
+            "GIT_COMMITTER_NAME",
+            "OPENAI_API_KEY",
+            "OPENROUTER_API_KEY",
+            "LLAMA_API_KEY",
+            "BRAVE_SEARCH_API_KEY",
+        ];
+        let Some(fixture) = std::env::var_os(FIXTURE) else {
+            let fixture = tempfile::tempdir().unwrap();
+            std::fs::create_dir(fixture.path().join("project")).unwrap();
+            let mut child = tokio::process::Command::new(std::env::current_exe().unwrap());
+            child
+                .args([
+                    "--exact",
+                    "commands::tests::trusted_commands_preserve_the_inherited_host_environment",
+                    "--nocapture",
+                ])
+                .env(FIXTURE, fixture.path());
+            for name in VARIABLES {
+                child.env(name, fixture.path().join(name));
+            }
+            let output = child.output().await.unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        };
+        let mut script = String::from("set -eu; ");
+        for name in VARIABLES {
+            script.push_str(&format!(
+                "test \"${name}\" = \"${FIXTURE}/{name}\" || exit 19; "
+            ));
+        }
+        script.push_str("printf 'host environment preserved'");
+        let root = PathBuf::from(fixture).join("project");
+        let output = execute(&root, &script, &Settings::default()).await.unwrap();
+        assert_eq!(output.status, ActionStatus::Complete, "{}", output.text);
+        assert!(output.text.contains("host environment preserved"));
+        assert!(!root.join(".hfx/cache").exists());
+
+        #[cfg(target_os = "linux")]
+        {
+            // Explicit strict mode must still hide the same fixture secrets.
+            let settings = Settings {
+                command_mode: CommandMode::Sandbox,
+                ..Default::default()
+            };
+            let script = "set -eu; test \"$HOME\" = /tmp/hfx-home; test \"$TMPDIR\" = /tmp; \
+                test \"${OPENAI_API_KEY+x}\" = ''; test \"${OPENROUTER_API_KEY+x}\" = ''; \
+                test \"${LLAMA_API_KEY+x}\" = ''; test \"${BRAVE_SEARCH_API_KEY+x}\" = ''; \
+                test \"${SSH_AUTH_SOCK+x}\" = ''; test \"${PIP_CACHE_DIR+x}\" = ''; \
+                test \"${npm_config_cache+x}\" = ''; test \"${HFX_TRUSTED_ENV_FIXTURE+x}\" = ''; \
+                test \"$CARGO_HOME\" = \"$PWD/.hfx/cache/cargo\" || \
+                test \"$CARGO_HOME\" -ef \"$PWD/.hfx/cache/cargo\"; printf 'strict mode still isolated'";
+            let output = execute(&root, script, &settings).await.unwrap();
+            assert_eq!(output.status, ActionStatus::Complete, "{}", output.text);
+            assert!(output.text.contains("strict mode still isolated"));
+        }
+    }
+
+    #[tokio::test]
+    async fn trusted_commands_use_host_paths_without_a_workspace_filesystem_sandbox() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("project");
+        let outside = fixture.path().join("outside.txt");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(&outside, "before").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("host-link")).unwrap();
+        let output = execute(
+            &root,
+            "set -e; test \"$(cat ../outside.txt)\" = before; printf after > host-link; printf temporary > ../host-temp.txt",
+            &Settings::default(),
+        ).await.unwrap();
+        assert_eq!(output.status, ActionStatus::Complete, "{}", output.text);
+        assert_eq!(std::fs::read_to_string(outside).unwrap(), "after");
+        assert_eq!(
+            std::fs::read_to_string(fixture.path().join("host-temp.txt")).unwrap(),
+            "temporary"
+        );
+        assert!(!root.join(".hfx/cache").exists());
+    }
+
+    #[tokio::test]
+    async fn trusted_cargo_build_test_and_run_work_without_cache_overrides() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("src")).unwrap();
+        std::fs::write(
+            root.path().join("Cargo.toml"),
+            "[package]\nname = \"host-cargo-fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.path().join("Cargo.lock"),
+            "version = 4\n\n[[package]]\nname = \"host-cargo-fixture\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(root.path().join("src/main.rs"),
+            "fn main() { println!(\"normal cargo works\"); }\n#[test] fn fixture() { assert_eq!(2 + 2, 4); }\n").unwrap();
+        let output = execute(
+            root.path(),
+            "cargo build --locked && cargo test --locked && cargo run --locked",
+            &Settings::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(output.status, ActionStatus::Complete, "{}", output.text);
+        assert!(output.text.contains("normal cargo works"));
+        assert!(output.text.contains("1 passed"));
+        assert!(!root.path().join(".hfx/cache").exists());
+        assert!(!root.path().join(".cargo").exists());
+    }
 
     #[tokio::test]
     async fn verbose_errors_keep_the_tail_and_durable_private_logs() {

@@ -3037,7 +3037,7 @@ impl Harness {
                 }
             });
         ui.label(RichText::new(match self.saved.settings.command_mode {
-            CommandMode::Trusted => "Runs as you, with your Git/SSH setup, normal home, network and desktop access. Can read credentials and change files outside this project. Use only for projects/code you trust; no sudo is granted.",
+            CommandMode::Trusted => "No command sandbox: uses your normal toolchains, package caches, home/temp files, Git/SSH, environment/API keys, network and desktop access. Can change files outside this project. Use only for code you trust; no sudo is granted.",
             CommandMode::Sandbox => "Linux-only confinement: project and private temp files, network enabled, but no host SSH login or desktop session. No automatic fallback to trusted execution.",
         }).size(11.0).color(if self.saved.settings.command_mode == CommandMode::Trusted { theme::ERROR } else { theme::DIM }));
         ui.add(
@@ -4030,7 +4030,7 @@ impl Harness {
                 } else if pending.call.name == "run_command" {
                     ui.label(
                         RichText::new(match pending.command_mode {
-                            crate::state::CommandMode::Trusted => "Runs on the host as you, using normal Git/SSH and desktop access. Can read credentials and modify files outside the project.",
+                            crate::state::CommandMode::Trusted => "Runs on the host as you without a command sandbox, using normal toolchains, caches, Git/SSH, environment/API keys and desktop access. Can modify files outside the project.",
                             crate::state::CommandMode::Sandbox => "Runs inside the strict workspace filesystem sandbox; host SSH credentials and desktop connections are hidden.",
                         })
                             .size(12.0)

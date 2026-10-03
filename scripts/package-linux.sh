@@ -45,8 +45,9 @@ It is not a universal static binary, an AppImage, or a distro package.
 Completion alerts: notify-send, plus paplay/pw-play/canberra-gtk-play for audio.
 Settings → Appearance lets you mute either alert independently.
 Agent access: Settings → Tools selects trusted host commands or strict confinement.
-Trusted commands run as you with normal Git/SSH and desktop access, and can read
-credentials/change files outside the project. Use only with code you trust.
+Trusted commands use your normal toolchains, package caches, Git/SSH, environment
+and API keys, network and desktop access, without a command sandbox. They can
+read credentials/change files outside the project. Use only with code you trust.
 Commands default to a 30-minute timeout and preserve private workspace logs.
 Files are not refused at 64 KiB: large UTF-8 files support context-aware pages.
 Independent reads run up to four at a time; writes and reviewed actions stay ordered.
