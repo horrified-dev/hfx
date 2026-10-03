@@ -119,8 +119,16 @@ impl ToolCall {
 }
 
 pub fn definitions_for(settings: &Settings, openai: bool) -> Vec<Value> {
+    let background_guidance = match settings.command_mode {
+        crate::state::CommandMode::Trusted => {
+            "Launch long-running development servers in the background (for example, bun run dev &). After a successful shell exit, inherited output pipes do not hold this tool open: background output continues to the reported logs. Check service readiness with a bounded request before screenshots or other follow-up work; launch success is not readiness. Stop the service when finished. Attached background groups are cleaned up when hfx exits, not by Stop during a later tool."
+        }
+        crate::state::CommandMode::Sandbox => {
+            "Sandbox jobs are scoped to this invocation. Do not assume a background server survives sandbox exit; never bypass the selected confinement or fall back to trusted mode."
+        }
+    };
     let command_description = format!(
-        "Execute a shell command in {}. {} Commands start in the selected workspace. Use workspace paths for durable logs/artifacts. Timeout: {} seconds. Captures up to 64 KiB beginning/tail per stream and preserves durable command logs. Review mode, if enabled, requires approval.",
+        "Execute a shell command in {}. {} Commands start in the selected workspace. Use workspace paths for durable logs/artifacts. Timeout: {} seconds. Captures up to 64 KiB beginning/tail per stream and preserves durable command logs. {background_guidance} Review mode, if enabled, requires approval.",
         settings.command_mode.label(),
         settings.command_mode.instructions(),
         settings.command_timeout()
@@ -489,8 +497,11 @@ mod tests {
                 if mode == crate::state::CommandMode::Trusted {
                     assert!(description.contains("Do not invent sandbox workarounds"));
                     assert!(description.contains("CARGO_HOME"));
+                    assert!(description.contains("background output continues"));
+                    assert!(description.contains("Check service readiness"));
                 } else {
                     assert!(description.contains("Cargo cache setup is handled automatically"));
+                    assert!(description.contains("Do not assume a background server survives"));
                 }
             }
         }

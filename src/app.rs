@@ -3,7 +3,7 @@ use crate::{
     backend::{self, Event, Request},
     codex::{self, Account, Auth, AuthAction, AuthEvent},
     motion::{self, Reveal},
-    notifications, persistence,
+    notifications, persistence, settings_ui as prefs,
     state::{
         ActionStatus, Attachment, AttachmentContent, Chat, Message, Project, Provider,
         QueuedMessage, ReplyBlock, Saved, Settings, Status,
@@ -2975,244 +2975,469 @@ impl Harness {
 
     fn settings_panel(&mut self, ui: &mut Ui, now: f64) {
         let mut visible = self.settings_open;
-        egui::Panel::right("settings").exact_size(350.0).resizable(false).frame(Frame::NONE.fill(theme::SIDEBAR).inner_margin(22)).show_collapsible(ui,&mut visible,|ui| {
-            ui.horizontal(|ui| {ui.heading("Settings");ui.with_layout(Layout::right_to_left(Align::Center),|ui| {if theme::icon_button(ui,Icon::Close,"Close settings",false,28.0).clicked() {self.settings_open=false;}});});
-            ui.label(RichText::new("Make this workspace yours.").size(12.0).color(theme::MUTED));
-            ui.add_space(18.0);
-            ui.horizontal(|ui| {for (i,label) in ["Providers","Appearance","Tools"].iter().enumerate() {ui.selectable_value(&mut self.settings_tab,i,*label);}});
-            ui.add_space(10.0);ui.separator();
-            ScrollArea::vertical().id_salt("settings_scroll").auto_shrink([false,false]).show(ui,|ui| {
-                match self.settings_tab {
-                    0=>self.provider_settings(ui),
-                    1=>{
-                        theme::section(ui,"MOTION");
-                        ui.checkbox(&mut self.saved.settings.reduced_motion,"Reduce motion");
-                        ui.label(RichText::new("Instant text and minimal transitions.").size(11.0).color(theme::DIM));
-                        ui.add_space(12.0);
-                        ui.label("Text reveal speed");ui.add(egui::Slider::new(&mut self.saved.settings.reveal_speed,40.0..=320.0).suffix(" chars/s"));
-                        theme::section(ui,"READING");
-                        ui.checkbox(&mut self.saved.settings.show_reasoning,"Show reasoning summaries");
-                        #[cfg(target_os = "linux")]
+        let width = (ui.ctx().content_rect().width() * 0.36).clamp(356.0, 424.0);
+        egui::Panel::right("settings")
+            .exact_size(width)
+            .resizable(false)
+            .frame(Frame::NONE.fill(theme::SIDEBAR).inner_margin(18))
+            .show_collapsible(ui, &mut visible, |ui| {
+                prefs::style(ui);
+                // Keep close/save affordances reachable even in a long tab.
+                egui::Panel::bottom("settings_footer")
+                    .exact_size(56.0)
+                    .frame(Frame::NONE.fill(theme::SIDEBAR))
+                    .show(ui, |ui| {
+                        ui.separator();
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            ui.vertical(|ui| {
+                                ui.label(
+                                    RichText::new("Saved automatically")
+                                        .size(11.0)
+                                        .color(prefs::GREEN),
+                                );
+                                prefs::help(ui, "API keys stay in this session.");
+                            });
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if theme::dialog_action(ui, "Done", false).clicked() {
+                                    self.settings_open = false;
+                                    self.notify("Settings saved", now);
+                                }
+                            });
+                        });
+                    });
+                ui.horizontal(|ui| {
+                    let (rect, _) = ui.allocate_exact_size(vec2(38.0, 38.0), Sense::hover());
+                    ui.painter()
+                        .rect_filled(rect, 11, theme::ACCENT.gamma_multiply(0.12));
+                    theme::icon(
+                        ui.painter(),
+                        rect.center(),
+                        21.0,
+                        Icon::Settings,
+                        theme::ACCENT,
+                    );
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new("Settings").size(23.0).strong());
+                        prefs::help(ui, "A little tuning. A better flow.");
+                    });
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if theme::icon_button(ui, Icon::Close, "Close settings", false, 28.0)
+                            .clicked()
                         {
-                            theme::section(ui,"COMPLETION ALERTS");
-                            ui.checkbox(&mut self.saved.settings.desktop_notifications,"Desktop notification when work finishes");
-                            ui.checkbox(&mut self.saved.settings.completion_sound,"Play a quiet completion sound");
-                            ui.label(RichText::new("One alert after this chat’s queued batch finishes. Stop and errors stay silent. Do Not Disturb controls desktop banners; mute the independent chime here or in system audio.").size(11.0).color(theme::DIM));
+                            self.settings_open = false;
                         }
-                        ui.add_space(12.0);ui.label("Text size");ui.add(egui::Slider::new(&mut self.saved.settings.font_size,13.0..=19.0).suffix(" px"));
-                        theme::section(ui,"THEME");theme::badge(ui,"CHARCOAL / SAGE",theme::ACCENT);
-                        ui.add_space(12.0);ui.label(RichText::new("A calm, dark workspace. Gentle fades, a sliding sidebar, and text that keeps up with your model.").size(12.0).color(theme::MUTED));
-                    },
-                    _=>{
-                        theme::section(ui,"AGENT TOOLS");
-                        ui.checkbox(&mut self.saved.settings.tools_enabled,"Enable agent tools");
-                        ui.label(RichText::new("Read files, propose edits, and ask questions with a 30-second recommended answer timer.").size(12.0).color(theme::MUTED));
-                        ui.add_space(16.0);ui.checkbox(&mut self.saved.settings.review_actions,"Review each tool action");
-                        ui.add_space(12.0);ui.checkbox(&mut self.saved.settings.commands_enabled,"Enable shell commands");
-                        self.command_and_web_settings(ui);
-                        theme::section(ui,"APPROVALS");
-                        theme::badge(ui,"AUTOMATIC ACTIONS",theme::ACCENT);
-                        ui.add_space(12.0);ui.label(RichText::new("Enabled tools run automatically. Review mode adds approval prompts, including for commands and web requests. The assistant continues until finished or stopped.").size(12.0).color(theme::MUTED));
-                        self.git_attribution_settings(ui);
-                        theme::section(ui,"ASSISTANT INSTRUCTIONS");
-                        ui.add(egui::TextEdit::multiline(&mut self.saved.settings.system_prompt).desired_width(f32::INFINITY).desired_rows(7));
-                        ui.label(RichText::new("The built-in workspace and Git attribution rules are added to these instructions for every provider.").size(11.0).color(theme::DIM));
-                    },
-                }
-                ui.add_space(24.0);ui.separator();ui.add_space(10.0);
-                ui.label(RichText::new("Preferences and chats save automatically.\nAPI keys stay in memory for this session.").size(11.0).color(theme::DIM));
-                if ui.button("Done").clicked() {self.settings_open=false;self.notify("Settings saved",now);}
+                    });
+                });
+                ui.add_space(16.0);
+                prefs::tabs(ui, &mut self.settings_tab);
+                ScrollArea::vertical()
+                    .id_salt(("settings_scroll", self.settings_tab))
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        // Leave a little room for the scrollbar and card shadows.
+                        ui.set_width((ui.available_width() - 4.0).max(1.0));
+                        match self.settings_tab {
+                            0 => self.provider_settings(ui),
+                            1 => self.appearance_settings(ui),
+                            _ => self.tool_settings(ui),
+                        }
+                        ui.add_space(16.0);
+                    });
             });
+    }
+
+    fn appearance_settings(&mut self, ui: &mut Ui) {
+        prefs::intro(
+            ui,
+            "Find your focus.",
+            "A quieter canvas, tuned to the way you work.",
+        );
+        let settings = &mut self.saved.settings;
+        prefs::card(ui, "palette", |ui| {
+            prefs::heading(ui, Icon::Spark, "Midnight / Iris", "Your workspace palette");
+            ui.horizontal(|ui| {
+                for color in [
+                    theme::BG,
+                    theme::SURFACE,
+                    theme::OUTLINE,
+                    theme::ACCENT,
+                    theme::TEXT,
+                ] {
+                    let (rect, _) = ui.allocate_exact_size(vec2(24.0, 24.0), Sense::hover());
+                    ui.painter().circle_filled(rect.center(), 10.0, color);
+                    ui.painter().circle_stroke(
+                        rect.center(),
+                        10.0,
+                        Stroke::new(1.0, theme::OUTLINE),
+                    );
+                }
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    prefs::pill(ui, "ACTIVE", theme::ACCENT)
+                });
+            });
+            ui.add_space(4.0);
+            Frame::NONE
+                .fill(theme::SIDEBAR)
+                .stroke(Stroke::new(1.0, theme::LINE))
+                .corner_radius(9)
+                .inner_margin(12)
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        theme::inline_icon(ui, Icon::Terminal, 14.0, theme::ACCENT);
+                        ui.label(RichText::new("hfx").size(12.0).strong());
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            prefs::label(ui, "READING PREVIEW")
+                        });
+                    });
+                    ui.add_space(3.0);
+                    ui.label(
+                        RichText::new("A little space to think.")
+                            .size(settings.font_size)
+                            .color(theme::TEXT),
+                    );
+                    ui.label(
+                        RichText::new("Your next good idea starts here.")
+                            .size(settings.font_size)
+                            .color(theme::MUTED),
+                    );
+                    if settings.show_reasoning {
+                        ui.add_space(3.0);
+                        ui.label(
+                            RichText::new("Reasoning summaries appear alongside replies.")
+                                .size(11.0)
+                                .color(theme::ACCENT),
+                        );
+                    }
+                });
+        });
+        prefs::card(ui, "reading", |ui| {
+            prefs::heading(ui, Icon::Pencil, "Reading", "Comfort comes first");
+            prefs::label(ui, "Conversation text size");
+            ui.spacing_mut().slider_width = (ui.available_width() - 84.0).max(80.0);
+            ui.add(egui::Slider::new(&mut settings.font_size, 13.0..=19.0).suffix(" px"));
+            prefs::divider(ui);
+            prefs::toggle(
+                ui,
+                &mut settings.show_reasoning,
+                "Reasoning summaries",
+                "See how the model approaches your request.",
+            );
+        });
+        prefs::card(ui, "motion", |ui| {
+            prefs::heading(ui, Icon::Spark, "Motion", "Set the pace");
+            prefs::toggle(
+                ui,
+                &mut settings.reduced_motion,
+                "Reduce motion",
+                "Instant text and minimal transitions.",
+            );
+            prefs::divider(ui);
+            ui.add_enabled_ui(!settings.reduced_motion, |ui| {
+                prefs::label(ui, "Text reveal speed");
+                ui.spacing_mut().slider_width = (ui.available_width() - 116.0).max(80.0);
+                ui.add(
+                    egui::Slider::new(&mut settings.reveal_speed, 40.0..=320.0).suffix(" chars/s"),
+                );
+                ui.horizontal(|ui| {
+                    prefs::help(ui, "Unhurried");
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        prefs::help(ui, "Responsive")
+                    });
+                });
+            });
+        });
+        #[cfg(target_os = "linux")]
+        prefs::card(ui, "completion_alerts", |ui| {
+            prefs::heading(ui, Icon::Check, "When work is done", "A gentle heads-up");
+            prefs::toggle(
+                ui,
+                &mut settings.desktop_notifications,
+                "Desktop notification",
+                "One alert after this chat’s queued batch.",
+            );
+            prefs::divider(ui);
+            prefs::toggle(
+                ui,
+                &mut settings.completion_sound,
+                "Completion sound",
+                "An independent, quiet chime.",
+            );
+            prefs::help(
+                ui,
+                "Stop and errors stay silent. Do Not Disturb controls desktop banners; mute the chime here or in system audio.",
+            );
+        });
+    }
+
+    fn tool_settings(&mut self, ui: &mut Ui) {
+        prefs::intro(
+            ui,
+            "Capable. On your terms.",
+            "Choose what your agent can do, and how it asks.",
+        );
+        prefs::card(ui, "agent_tools", |ui| {
+            prefs::heading(
+                ui,
+                Icon::Terminal,
+                "Agent capabilities",
+                "From conversation to action",
+            );
+            prefs::toggle(
+                ui,
+                &mut self.saved.settings.tools_enabled,
+                "Enable agent tools",
+                "Read files, make edits, and ask questions.",
+            );
+            prefs::divider(ui);
+            ui.add_enabled_ui(self.saved.settings.tools_enabled, |ui| {
+                prefs::toggle(
+                    ui,
+                    &mut self.saved.settings.review_actions,
+                    "Review each tool action",
+                    "Approve file, command, and web actions first.",
+                );
+            });
+            let (status, color, explanation) = if !self.saved.settings.tools_enabled {
+                (
+                    "TOOLS PAUSED",
+                    theme::MUTED,
+                    "Preferences below are kept for when you enable tools again.",
+                )
+            } else if self.saved.settings.review_actions {
+                (
+                    "REVIEW MODE",
+                    prefs::AMBER,
+                    "Workspace and web actions wait for approval. Questions use their own 30-second recommendation timer.",
+                )
+            } else {
+                (
+                    "AUTOMATIC ACTIONS",
+                    prefs::GREEN,
+                    "Enabled tools run until the task finishes or you stop it. Questions have a 30-second recommendation timer.",
+                )
+            };
+            ui.add_space(3.0);
+            prefs::pill(ui, status, color);
+            prefs::help(ui, explanation);
+        });
+        self.command_and_web_settings(ui);
+        self.git_attribution_settings(ui);
+        prefs::card(ui, "instructions", |ui| {
+            prefs::heading(
+                ui,
+                Icon::Pencil,
+                "Assistant instructions",
+                "Your preferences, in your words",
+            );
+            ui.add(
+                egui::TextEdit::multiline(&mut self.saved.settings.system_prompt)
+                    .id_salt("system_prompt")
+                    .desired_width(f32::INFINITY)
+                    .desired_rows(6)
+                    .margin(vec2(10.0, 10.0)),
+            );
+            prefs::help(
+                ui,
+                "Built-in workspace and Git attribution rules are added to these instructions for every provider.",
+            );
         });
     }
 
     fn command_and_web_settings(&mut self, ui: &mut Ui) {
         use crate::state::{CommandMode, SearchProvider};
-        ui.label(RichText::new("Command environment").size(12.0));
-        egui::ComboBox::from_id_salt("command_mode")
-            .selected_text(self.saved.settings.command_mode.label())
-            .show_ui(ui, |ui| {
-                for mode in [CommandMode::Trusted, CommandMode::Sandbox] {
-                    ui.selectable_value(&mut self.saved.settings.command_mode, mode, mode.label());
-                }
+        let settings = &mut self.saved.settings;
+        ui.add_enabled_ui(settings.tools_enabled, |ui| {
+            prefs::card(ui, "shell", |ui| {
+                prefs::heading(ui, Icon::Terminal, "Shell access", "The environment behind each command");
+                prefs::toggle(ui, &mut settings.commands_enabled, "Shell commands", "Build, test, and run tools from your project.");
+                prefs::divider(ui);
+                ui.add_enabled_ui(settings.commands_enabled, |ui| {
+                    prefs::label(ui, "Command environment");
+                    ui.columns(2, |columns| {
+                        for (column, (mode, title)) in columns.iter_mut().zip([(CommandMode::Trusted, "Trusted host"), (CommandMode::Sandbox, "Strict sandbox")]) {
+                            if column.add_sized(vec2(column.available_width(), 34.0), egui::Button::new(title).selected(settings.command_mode == mode)).clicked() {
+                                settings.command_mode = mode;
+                            }
+                        }
+                    });
+                    match settings.command_mode {
+                        CommandMode::Trusted => prefs::callout(ui, "HOST ACCESS · Not sandboxed\nCommands run as you and can read credentials, use Git/SSH, network and desktop access, and change files outside this project. Use only with code you trust. No sudo is granted.", prefs::AMBER),
+                        CommandMode::Sandbox => prefs::callout(ui, "STRICT SANDBOX · Linux\nProject and private temporary files, with network access. Host SSH credentials and desktop sessions are hidden. Requires bubblewrap; never falls back to trusted mode.", theme::ACCENT),
+                    }
+                    ui.add_space(3.0);
+                    prefs::label(ui, "Command timeout");
+                    ui.spacing_mut().slider_width = (ui.available_width() - 82.0).max(80.0);
+                    ui.add(egui::Slider::new(&mut settings.command_timeout_secs, 30..=7200).suffix(" s").logarithmic(true));
+                    egui::CollapsingHeader::new(RichText::new("Output & cancellation").size(11.0).color(theme::MUTED)).id_salt("command_details").show(ui, |ui| {
+                        prefs::help(ui, "Default: 30 minutes. Output keeps the beginning and final diagnostics; private logs survive timeout under .hfx/command-logs. Stop cancels the command group on Unix. Mode changes apply to the next run.");
+                    });
+                });
             });
-        ui.label(RichText::new(match self.saved.settings.command_mode {
-            CommandMode::Trusted => "No command sandbox: uses your normal toolchains, package caches, home/temp files, Git/SSH, environment/API keys, network and desktop access. Can change files outside this project. Use only for code you trust; no sudo is granted.",
-            CommandMode::Sandbox => "Linux-only confinement: project and private temp files, network enabled, but no host SSH login or desktop session. No automatic fallback to trusted execution.",
-        }).size(11.0).color(if self.saved.settings.command_mode == CommandMode::Trusted { theme::ERROR } else { theme::DIM }));
-        ui.add(
-            egui::Slider::new(&mut self.saved.settings.command_timeout_secs, 30..=7200)
-                .text("Command timeout")
-                .suffix(" s")
-                .logarithmic(true),
-        );
-        ui.label(RichText::new("Default 30 minutes. Output keeps the beginning and error tail; private logs survive timeout under .hfx/command-logs. Stop cancels the active command group on Unix. Mode changes apply to the next run.").size(11.0).color(theme::DIM));
-        theme::section(ui, "WEB RESEARCH");
-        ui.checkbox(
-            &mut self.saved.settings.web_enabled,
-            "Enable web search and fetch",
-        );
-        egui::ComboBox::from_id_salt("search_provider")
-            .selected_text(self.saved.settings.search_provider.label())
-            .show_ui(ui, |ui| {
-                for provider in [
-                    SearchProvider::DuckDuckGo,
-                    SearchProvider::Brave,
-                    SearchProvider::Searxng,
-                ] {
-                    ui.selectable_value(
-                        &mut self.saved.settings.search_provider,
-                        provider,
-                        provider.label(),
-                    );
-                }
+            prefs::card(ui, "web", |ui| {
+                prefs::heading(ui, Icon::Globe, "Web research", "Bring outside context into your work");
+                prefs::toggle(ui, &mut settings.web_enabled, "Search & fetch", "Anonymous HTTP, without cookies or JavaScript.");
+                prefs::divider(ui);
+                ui.add_enabled_ui(settings.web_enabled, |ui| {
+                    prefs::label(ui, "Search service");
+                    egui::ComboBox::from_id_salt("search_provider").selected_text(settings.search_provider.label()).width(ui.available_width()).show_ui(ui, |ui| {
+                        for provider in [SearchProvider::DuckDuckGo, SearchProvider::Brave, SearchProvider::Searxng] {
+                            ui.selectable_value(&mut settings.search_provider, provider, provider.label());
+                        }
+                    });
+                    match settings.search_provider {
+                        SearchProvider::Brave => {
+                            prefs::label(ui, "Brave API key · session only");
+                            prefs::field(ui, &mut settings.brave_search_key, "or BRAVE_SEARCH_API_KEY", true);
+                        }
+                        SearchProvider::Searxng => {
+                            prefs::label(ui, "SearXNG endpoint");
+                            prefs::field(ui, &mut settings.searxng_url, "https://your-server/search", false);
+                        }
+                        SearchProvider::DuckDuckGo => prefs::help(ui, "No API key needed. Automated searches may be blocked by the service."),
+                    }
+                    egui::CollapsingHeader::new(RichText::new("Privacy & service requirements").size(11.0).color(theme::MUTED)).id_salt("web_details").show(ui, |ui| {
+                        prefs::help(ui, "Search queries go to the selected service. Brave requires an API key; SearXNG must allow JSON search. Fetch reads HTTP/HTTPS text, including local docs, without browser cookies or JavaScript. Web content is untrusted reference data.");
+                    });
+                });
             });
-        match self.saved.settings.search_provider {
-            SearchProvider::Brave => {
-                ui.label(RichText::new("Brave Search API key (session only)").size(11.0));
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.saved.settings.brave_search_key)
-                        .password(true)
-                        .hint_text("or BRAVE_SEARCH_API_KEY")
-                        .desired_width(f32::INFINITY),
-                );
-            }
-            SearchProvider::Searxng => {
-                ui.label(RichText::new("SearXNG search endpoint").size(11.0));
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.saved.settings.searxng_url)
-                        .hint_text("https://your-server/search")
-                        .desired_width(f32::INFINITY),
-                );
-            }
-            SearchProvider::DuckDuckGo => {}
-        }
-        ui.label(RichText::new("Search queries go to the selected service. DuckDuckGo needs no key but may block automated requests; Brave needs an API key, SearXNG a server allowing JSON search. Fetch reads HTTP/HTTPS text, including local docs, without browser cookies or JavaScript. Web content is untrusted data.").size(11.0).color(theme::DIM));
+        });
     }
 
     fn git_attribution_settings(&mut self, ui: &mut Ui) {
-        theme::section(ui, "GIT ATTRIBUTION");
-        ui.label(RichText::new("hfx is a co-author on commits it creates. Your Git author identity stays unchanged.").size(12.0).color(theme::MUTED));
-        ui.add_space(6.0);
-        ui.label(RichText::new("Co-author email").size(12.0));
-        ui.add(
-            egui::TextEdit::singleline(&mut self.saved.settings.git_coauthor_email)
-                .id(Id::new("git_coauthor_email"))
-                .hint_text("Verified or hosting noreply email")
-                .desired_width(f32::INFINITY),
-        );
-        ui.add(
-            egui::Label::new(
-                RichText::new(self.saved.settings.git_coauthor_trailer())
-                    .monospace()
-                    .size(11.0)
-                    .color(theme::MUTED),
-            )
-            .wrap(),
-        );
-        if !self.saved.settings.git_coauthor_email_is_valid() {
-            ui.label(RichText::new("Enter a plain email address. Until it is valid, the safe hfx@local.invalid placeholder is used.").size(11.0).color(theme::ERROR));
-        } else if self.saved.settings.git_coauthor_address()
-            == crate::state::DEFAULT_GIT_COAUTHOR_EMAIL
-        {
-            ui.label(RichText::new("Placeholder only: set the hfx profile’s verified/noreply email to link its name and avatar.").size(11.0).color(theme::DIM));
-        }
-        ui.label(RichText::new("GitHub/GitLab get the icon from the profile linked to this email. Set that profile’s avatar to our hfx icon; it cannot be embedded in a Git trailer.").size(11.0).color(theme::DIM));
+        prefs::card(ui, "git_attribution", |ui| {
+            prefs::heading(
+                ui,
+                Icon::Plus,
+                "Git attribution",
+                "Your identity stays yours",
+            );
+            prefs::help(
+                ui,
+                "hfx is a co-author on commits it creates. Your Git author identity stays unchanged.",
+            );
+            prefs::label(ui, "Co-author email");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.saved.settings.git_coauthor_email)
+                    .id(Id::new("git_coauthor_email"))
+                    .hint_text("Verified or hosting noreply email")
+                    .desired_width(f32::INFINITY)
+                    .margin(vec2(10.0, 9.0)),
+            );
+            Frame::NONE
+                .fill(theme::SIDEBAR)
+                .corner_radius(7)
+                .inner_margin(9)
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(self.saved.settings.git_coauthor_trailer())
+                                .monospace()
+                                .size(11.0)
+                                .color(theme::MUTED),
+                        )
+                        .wrap(),
+                    );
+                });
+            if !self.saved.settings.git_coauthor_email_is_valid() {
+                ui.label(RichText::new("Enter a plain email address. Until it is valid, the safe hfx@local.invalid placeholder is used.").size(11.0).color(theme::ERROR));
+            } else if self.saved.settings.git_coauthor_address()
+                == crate::state::DEFAULT_GIT_COAUTHOR_EMAIL
+            {
+                prefs::help(
+                    ui,
+                    "Set the hfx profile’s verified/noreply email to link its name and avatar.",
+                );
+            }
+            egui::CollapsingHeader::new(RichText::new("About the co-author avatar").size(11.0).color(theme::MUTED)).id_salt("attribution_details").show(ui, |ui| {
+                prefs::help(ui, "GitHub/GitLab use the profile linked to this email. Set that profile’s avatar to the hfx icon; images cannot be embedded in Git trailers.");
+            });
+        });
     }
 
     fn provider_settings(&mut self, ui: &mut Ui) {
-        theme::section(ui, "INFERENCE PROVIDER");
-        for (provider, subtitle, glyph) in [
-            (
-                Provider::Codex,
-                "Sign in with your ChatGPT account",
-                Icon::Spark,
-            ),
-            (
-                Provider::OpenAI,
-                "Cloud models · Responses API",
-                Icon::Globe,
-            ),
-            (Provider::Llama, "Your models · your machine", Icon::Cpu),
-            (
-                Provider::OpenRouter,
-                "One key · many model providers",
-                Icon::Globe,
-            ),
-            (Provider::Demo, "Explore the interface offline", Icon::Spark),
+        prefs::intro(
+            ui,
+            "Choose your engine.",
+            "Cloud intelligence or local inference. Your call.",
+        );
+        let width = (ui.available_width() - 8.0) / 2.0;
+        for pair in [
+            [Provider::Codex, Provider::OpenAI],
+            [Provider::OpenRouter, Provider::Llama],
         ] {
-            let selected = self.saved.settings.provider == provider;
-            let (rect, response) =
-                ui.allocate_exact_size(vec2(ui.available_width(), 58.0), Sense::click());
-            ui.painter().rect_filled(
-                rect,
-                9,
-                if selected {
-                    theme::SURFACE
-                } else {
-                    theme::SIDEBAR
-                },
-            );
-            ui.painter().rect_stroke(
-                rect,
-                9,
-                Stroke::new(
-                    1.0,
-                    if selected {
-                        theme::ACCENT.gamma_multiply(0.4)
-                    } else {
-                        theme::LINE
-                    },
-                ),
-                egui::StrokeKind::Inside,
-            );
-            theme::icon(
-                ui.painter(),
-                rect.min + vec2(24.0, 29.0),
-                20.0,
-                glyph,
-                if selected {
-                    theme::ACCENT
-                } else {
-                    theme::MUTED
-                },
-            );
-            ui.painter().text(
-                rect.min + vec2(45.0, 20.0),
-                Align2::LEFT_CENTER,
-                provider.label(),
-                FontId::proportional(13.0),
-                theme::TEXT,
-            );
-            ui.painter().text(
-                rect.min + vec2(45.0, 39.0),
-                Align2::LEFT_CENTER,
-                subtitle,
-                FontId::proportional(11.0),
-                theme::DIM,
-            );
-            if selected {
-                theme::icon(
-                    ui.painter(),
-                    rect.right_center() - vec2(18.0, 0.0),
-                    14.0,
-                    Icon::Check,
-                    theme::ACCENT,
-                );
+            ui.horizontal(|ui| {
+                for provider in pair {
+                    if prefs::provider(
+                        ui,
+                        provider,
+                        self.saved.settings.provider == provider,
+                        width,
+                    )
+                    .clicked()
+                    {
+                        self.saved.settings.provider = provider;
+                    }
+                }
+            });
+        }
+        ui.horizontal(|ui| {
+            if ui
+                .add(
+                    egui::Button::new(RichText::new("Demo").size(11.0))
+                        .selected(self.saved.settings.provider == Provider::Demo),
+                )
+                .clicked()
+            {
+                self.saved.settings.provider = Provider::Demo;
             }
-            if response.clicked() {
-                self.saved.settings.provider = provider;
+            prefs::help(ui, "Just exploring? Try a scripted, offline preview.");
+        });
+        ui.add_space(8.0);
+        match self.saved.settings.provider {
+            Provider::Codex => self.codex_settings(ui),
+            Provider::Demo => prefs::card(ui, "offline", |ui| {
+                prefs::heading(
+                    ui,
+                    Icon::Spark,
+                    "A space to explore",
+                    "No credentials. No model requests.",
+                );
+                prefs::pill(ui, "OFFLINE PREVIEW", prefs::GREEN);
+                prefs::help(
+                    ui,
+                    "Send any message for a scripted response with reasoning and streaming. Choose a provider above when you’re ready for real work.",
+                );
+            }),
+            _ => {
+                self.connection_settings(ui);
+                self.generation_settings(ui);
             }
         }
         if self.saved.settings.provider != Provider::Demo {
-            theme::section(ui, "CONTEXT");
-            ui.checkbox(
-                &mut self.saved.settings.auto_compact,
-                "Automatically compact at 75%",
+            self.context_settings(ui);
+        }
+    }
+
+    fn context_settings(&mut self, ui: &mut Ui) {
+        prefs::card(ui, "context", |ui| {
+            prefs::heading(
+                ui,
+                Icon::Queue,
+                "Conversation memory",
+                "Room for the long run",
             );
+            prefs::toggle(
+                ui,
+                &mut self.saved.settings.auto_compact,
+                "Auto-compaction",
+                "Summarize older context at 75% capacity.",
+            );
+            prefs::divider(ui);
+            prefs::label(ui, "Model context window · tokens");
             let key = self.saved.settings.context_key();
             let mut limit = self.saved.settings.context_limit();
-            ui.label("Model context window (tokens)");
             if ui
                 .add(
                     egui::DragValue::new(&mut limit)
@@ -3226,172 +3451,158 @@ impl Harness {
                     .context_windows
                     .insert(key.clone(), limit);
             }
-            ui.label(
-                RichText::new(format!(
-                    "Maximum source: {}",
-                    self.saved.settings.context_limit_source()
-                ))
-                .size(11.0)
-                .color(theme::MUTED),
+            prefs::help(
+                ui,
+                &format!("Source: {}", self.saved.settings.context_limit_source()),
             );
             if self.saved.settings.context_windows.contains_key(&key)
                 && ui.small_button("Use discovered limit / fallback").clicked()
             {
                 self.saved.settings.context_windows.remove(&key);
             }
-            ui.label(RichText::new("Uses the selected model’s discovered context window, not a universal Codex limit. Without metadata, 128,000 is an unverified fallback; set your model’s actual window here (for example, 272,000 if applicable). This is independent of its output limit. Summaries preserve the full visible chat.").size(11.0).color(theme::DIM));
-        }
-        if self.saved.settings.provider == Provider::Codex {
-            self.codex_settings(ui);
-            return;
-        }
+            prefs::help(
+                ui,
+                "Summaries free up model context. Your full visible chat stays intact.",
+            );
+            egui::CollapsingHeader::new(RichText::new("How context limits work").size(11.0).color(theme::MUTED)).id_salt("context_details").show(ui, |ui| {
+                prefs::help(ui, "Uses the selected model’s discovered context window, not a universal Codex limit. Without metadata, 128,000 is an unverified fallback; set your model’s actual window here. This is separate from the maximum output length.");
+            });
+        });
+    }
+
+    fn generation_settings(&mut self, ui: &mut Ui) {
         let settings = &mut self.saved.settings;
-        match settings.provider {
-            Provider::Demo => {
-                theme::section(ui, "OFFLINE PREVIEW");
-                ui.label(RichText::new("Send any message to see a scripted response with reasoning and smooth streaming. Choose a real provider above when you’re ready.").size(13.0).color(theme::MUTED));
+        prefs::card(ui, "generation", |ui| {
+            prefs::heading(ui, Icon::Spark, "Generation", "Balance depth and speed");
+            prefs::effort(ui, &mut settings.effort);
+            prefs::help(ui, "Supported effort levels depend on the model.");
+            prefs::divider(ui);
+            prefs::label(ui, "Maximum output tokens");
+            ui.add(
+                egui::DragValue::new(&mut settings.max_tokens)
+                    .range(1024..=65536)
+                    .speed(256),
+            );
+            if settings.provider != Provider::OpenAI {
+                prefs::label(ui, "Temperature");
+                ui.spacing_mut().slider_width = (ui.available_width() - 64.0).max(80.0);
+                ui.add(egui::Slider::new(&mut settings.temperature, 0.0..=1.5));
             }
-            Provider::Codex => unreachable!(),
-            Provider::OpenAI | Provider::OpenRouter | Provider::Llama => {
-                let openai = settings.provider == Provider::OpenAI;
-                let router = settings.provider == Provider::OpenRouter;
-                theme::section(ui, "CONNECTION");
-                ui.label("Base URL");
-                ui.add(
-                    egui::TextEdit::singleline(settings.base_url_mut())
-                        .desired_width(f32::INFINITY),
-                );
-                ui.add_space(5.0);
-                ui.label("API key");
-                let hint = if openai {
-                    "Or use OPENAI_API_KEY"
-                } else if router {
-                    "Or use OPENROUTER_API_KEY"
-                } else {
-                    "Optional · or LLAMA_API_KEY"
-                };
-                ui.add(
-                    egui::TextEdit::singleline(settings.key_mut())
-                        .password(true)
-                        .hint_text(hint)
-                        .desired_width(f32::INFINITY),
-                );
-                ui.add_space(5.0);
-                ui.label("Model ID");
-                ui.add(
-                    egui::TextEdit::singleline(settings.model_mut()).desired_width(f32::INFINITY),
-                );
+            prefs::help(
+                ui,
+                match settings.provider {
+                    Provider::OpenAI => {
+                        "Reasoning summaries depend on model support. Uses separate API billing."
+                    }
+                    Provider::OpenRouter => {
+                        "Reasoning and tools depend on the model and provider. Uses your OpenRouter credits."
+                    }
+                    _ => "Reasoning and tools depend on the model and llama.cpp chat template.",
+                },
+            );
+        });
+    }
+
+    fn connection_settings(&mut self, ui: &mut Ui) {
+        prefs::card(ui, "connection", |ui| {
+            prefs::heading(ui, Icon::Globe, "Connection", "A direct line to your model");
+            let settings = &mut self.saved.settings;
+            let openai = settings.provider == Provider::OpenAI;
+            let router = settings.provider == Provider::OpenRouter;
+            prefs::label(ui, "Base URL");
+            prefs::field(ui, settings.base_url_mut(), "https://…/v1", false);
+            prefs::label(ui, "API key · session only");
+            let hint = if openai {
+                "Or use OPENAI_API_KEY"
+            } else if router {
+                "Or use OPENROUTER_API_KEY"
+            } else {
+                "Optional · or LLAMA_API_KEY"
+            };
+            prefs::field(ui, settings.key_mut(), hint, true);
+            prefs::label(ui, "Model ID");
+            prefs::field(ui, settings.model_mut(), "Your model identifier", false);
+            prefs::help(
+                ui,
                 if openai {
-                    ui.label(RichText::new("Use a Responses-compatible reasoning model available to your API account, including Codex model IDs.").size(11.0).color(theme::DIM));
+                    "Use a Responses-compatible reasoning model available to your API account."
                 } else if router {
-                    ui.label(RichText::new("Enter a provider/model ID, or test the connection to discover available models.").size(11.0).color(theme::DIM));
+                    "Use a provider/model ID, or discover models below."
                 } else {
-                    ui.label(RichText::new("Use the alias configured on your llama-server. Test the connection to discover it.").size(11.0).color(theme::DIM));
-                }
-                ui.add_space(10.0);
-                let config = format!(
-                    "{:?}|{}|{}",
-                    settings.provider,
-                    settings.base_url(),
-                    settings.key()
-                );
-                if config != self.probe_config {
-                    self.probe_config = config;
-                    self.probe_result = None;
-                    self.probe_rx = None;
-                }
-                if ui
-                    .add_enabled(
-                        self.probe_rx.is_none(),
-                        egui::Button::new(if self.probe_rx.is_some() {
+                    "Use your llama-server alias, or discover models below."
+                },
+            );
+            let config = format!(
+                "{:?}|{}|{}",
+                settings.provider,
+                settings.base_url(),
+                settings.key()
+            );
+            if config != self.probe_config {
+                self.probe_config = config;
+                self.probe_result = None;
+                self.probe_rx = None;
+            }
+            ui.add_space(4.0);
+            if ui
+                .add_enabled_ui(self.probe_rx.is_none(), |ui| {
+                    prefs::primary(
+                        ui,
+                        if self.probe_rx.is_some() {
                             "Connecting…"
                         } else {
                             "Test connection"
-                        }),
+                        },
                     )
-                    .clicked()
-                {
-                    let settings = settings.clone();
-                    let (tx, rx) = mpsc::channel();
-                    let ctx = ui.ctx().clone();
-                    self.runtime.spawn(async move {
-                        let result = backend::probe(settings).await;
-                        let _ = tx.send(result);
-                        ctx.request_repaint();
-                    });
-                    self.probe_rx = Some(rx);
-                }
-                if let Some(result) = &self.probe_result {
-                    match result {
-                        Ok(models) => {
-                            for model in models {
-                                if let Some(limit) = model.context_window {
-                                    let mut model_settings = settings.clone();
-                                    *model_settings.model_mut() = model.id.clone();
-                                    settings
-                                        .discovered_context_windows
-                                        .insert(model_settings.context_key(), limit);
-                                }
-                            }
-                            ui.label(
-                                RichText::new(format!("Connected · {} models", models.len()))
-                                    .size(12.0)
-                                    .color(theme::ACCENT),
-                            );
-                            egui::ComboBox::from_id_salt("available_models")
-                                .selected_text("Choose a discovered model")
-                                .width(245.0)
-                                .show_ui(ui, |ui| {
-                                    for model in models {
-                                        if ui
-                                            .selectable_label(
-                                                settings.model() == model.id,
-                                                &model.id,
-                                            )
-                                            .clicked()
-                                        {
-                                            *settings.model_mut() = model.id.clone();
-                                        }
-                                    }
-                                });
-                        }
-                        Err(error) => {
-                            ui.label(RichText::new(error).size(12.0).color(theme::ERROR));
-                        }
-                    }
-                }
-                theme::section(ui, "GENERATION");
-                ui.horizontal(|ui| {
-                    ui.label("Reasoning effort");
-                    egui::ComboBox::from_id_salt("settings_effort")
-                        .selected_text(&settings.effort)
-                        .show_ui(ui, |ui| {
-                            for effort in ["low", "medium", "high", "xhigh"] {
-                                ui.selectable_value(&mut settings.effort, effort.into(), effort);
-                            }
-                        });
+                })
+                .inner
+                .clicked()
+            {
+                let settings = settings.clone();
+                let (tx, rx) = mpsc::channel();
+                let ctx = ui.ctx().clone();
+                self.runtime.spawn(async move {
+                    let result = backend::probe(settings).await;
+                    let _ = tx.send(result);
+                    ctx.request_repaint();
                 });
-                ui.label(
-                    RichText::new("Supported effort levels depend on the model.")
-                        .size(11.0)
-                        .color(theme::DIM),
-                );
-                ui.add_space(8.0);
-                ui.label("Maximum output tokens");
-                ui.add(
-                    egui::DragValue::new(&mut settings.max_tokens)
-                        .range(1024..=65536)
-                        .speed(256),
-                );
-                if !openai {
-                    ui.add_space(8.0);
-                    ui.label("Temperature");
-                    ui.add(egui::Slider::new(&mut settings.temperature, 0.0..=1.5));
-                }
-                ui.add_space(12.0);
-                ui.label(RichText::new(if openai {"OpenAI supplies reasoning summaries when supported. This connection uses API billing."}else if router {"Reasoning and tools depend on the selected model and provider. Requests use your OpenRouter credits."}else{"Reasoning and tool support depend on your model and llama.cpp chat template."}).size(11.0).color(theme::DIM));
+                self.probe_rx = Some(rx);
             }
-        }
+            if let Some(result) = &self.probe_result {
+                match result {
+                    Ok(models) => {
+                        for model in models {
+                            if let Some(limit) = model.context_window {
+                                let mut model_settings = settings.clone();
+                                *model_settings.model_mut() = model.id.clone();
+                                settings
+                                    .discovered_context_windows
+                                    .insert(model_settings.context_key(), limit);
+                            }
+                        }
+                        prefs::pill(
+                            ui,
+                            &format!("CONNECTED · {} MODELS", models.len()),
+                            prefs::GREEN,
+                        );
+                        egui::ComboBox::from_id_salt("available_models")
+                            .selected_text("Choose a discovered model")
+                            .width(ui.available_width())
+                            .show_ui(ui, |ui| {
+                                for model in models {
+                                    if ui
+                                        .selectable_label(settings.model() == model.id, &model.id)
+                                        .clicked()
+                                    {
+                                        *settings.model_mut() = model.id.clone();
+                                    }
+                                }
+                            });
+                    }
+                    Err(error) => prefs::callout(ui, error, theme::ERROR),
+                }
+            }
+        });
     }
 
     fn start_auth(&mut self, ctx: &egui::Context, action: AuthAction) {
@@ -3419,115 +3630,130 @@ impl Harness {
     }
 
     fn codex_settings(&mut self, ui: &mut Ui) {
-        theme::section(ui, "OPENAI ACCOUNT");
         if !self.auth_checked && !self.preview && self.active.is_none() {
             self.auth_checked = true;
             self.start_auth(ui.ctx(), AuthAction::Status);
         }
-        if self.auth_account.signed_in {
-            theme::badge(ui, "SIGNED IN WITH OPENAI", theme::ACCENT);
-            ui.label(RichText::new(&self.auth_account.email).size(13.0));
-            ui.label(
-                RichText::new(&self.auth_account.plan)
-                    .size(11.0)
-                    .color(theme::DIM),
+        prefs::card(ui, "codex_account", |ui| {
+            prefs::heading(
+                ui,
+                Icon::Spark,
+                "Your OpenAI account",
+                "Codex, through your ChatGPT plan",
             );
-        } else {
-            ui.label(
-                RichText::new("Use your ChatGPT account for Codex.")
-                    .size(13.0)
-                    .color(theme::MUTED),
-            );
-        }
-        let busy = self.auth_rx.is_some();
-        ui.add_space(10.0);
-        ui.horizontal_wrapped(|ui| {
-            if ui
-                .add_enabled(
-                    !busy && self.active.is_none(),
-                    egui::Button::new("Sign in with OpenAI"),
-                )
-                .clicked()
-            {
-                self.start_auth(ui.ctx(), AuthAction::Login);
+            if self.auth_account.signed_in {
+                prefs::pill(ui, "SIGNED IN", prefs::GREEN);
+                ui.label(
+                    RichText::new(&self.auth_account.email)
+                        .size(13.0)
+                        .color(theme::TEXT),
+                );
+                prefs::help(ui, &self.auth_account.plan);
+            } else {
+                prefs::help(
+                    ui,
+                    "Connect your ChatGPT account to start working with Codex. No API key required.",
+                );
             }
-            if ui
-                .add_enabled(
-                    !busy && self.active.is_none(),
-                    egui::Button::new("Refresh account"),
-                )
-                .clicked()
-            {
-                self.start_auth(ui.ctx(), AuthAction::Status);
-            }
-        });
-        if busy {
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.label(if self.auth_url.is_some() {
-                    "Complete sign-in in your browser…"
-                } else {
-                    "Contacting Codex…"
-                });
-            });
-            ui.horizontal(|ui| {
-                if let Some(url) = &self.auth_url
-                    && ui.button("Open sign-in again").clicked()
-                {
-                    ui.ctx().open_url(egui::OpenUrl::new_tab(url.clone()));
-                }
-                if ui.button("Cancel").clicked() {
-                    self.cancel_auth();
-                }
-            });
-        }
-        if let Some(error) = &self.auth_error {
-            ui.label(RichText::new(error).size(12.0).color(theme::ERROR));
-        }
-        ui.add_space(10.0);
-        ui.label(RichText::new("Opens OpenAI in your browser. hfx receives the localhost callback and keeps its login in a private local cache.").size(11.0).color(theme::DIM));
-        if self.auth_account.signed_in
-            && ui
-                .add_enabled(
-                    !busy && self.active.is_none(),
-                    egui::Button::new("Sign out of hfx"),
-                )
-                .clicked()
-        {
-            self.start_auth(ui.ctx(), AuthAction::Logout);
-        }
-        theme::section(ui, "GENERATION");
-        ui.label("Model ID");
-        ui.add(
-            egui::TextEdit::singleline(&mut self.saved.settings.codex_model)
-                .desired_width(f32::INFINITY),
-        );
-        if !self.auth_models.is_empty() {
-            egui::ComboBox::from_id_salt("codex_models")
-                .selected_text("Choose a Codex model")
-                .width(245.0)
-                .show_ui(ui, |ui| {
-                    for model in &self.auth_models {
-                        ui.selectable_value(
-                            &mut self.saved.settings.codex_model,
-                            model.clone(),
-                            model,
-                        );
+            let busy = self.auth_rx.is_some();
+            ui.add_space(4.0);
+            ui.add_enabled_ui(!busy && self.active.is_none(), |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    if theme::dialog_action(
+                        ui,
+                        if self.auth_account.signed_in {
+                            "Sign in again"
+                        } else {
+                            "Sign in with OpenAI"
+                        },
+                        true,
+                    )
+                    .clicked()
+                    {
+                        self.start_auth(ui.ctx(), AuthAction::Login);
+                    }
+                    if ui.button("Refresh account").clicked() {
+                        self.start_auth(ui.ctx(), AuthAction::Status);
                     }
                 });
-        }
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            ui.label("Reasoning effort");
-            egui::ComboBox::from_id_salt("codex_effort")
-                .selected_text(&self.saved.settings.effort)
-                .show_ui(ui, |ui| {
-                    for effort in ["low", "medium", "high", "xhigh"] {
-                        ui.selectable_value(&mut self.saved.settings.effort, effort.into(), effort);
+            });
+            if busy {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spinner();
+                    ui.label(
+                        RichText::new(if self.auth_url.is_some() {
+                            "Complete sign-in in your browser…"
+                        } else {
+                            "Contacting Codex…"
+                        })
+                        .size(12.0),
+                    );
+                });
+                ui.horizontal_wrapped(|ui| {
+                    if let Some(url) = &self.auth_url
+                        && ui.button("Open sign-in again").clicked()
+                    {
+                        ui.ctx().open_url(egui::OpenUrl::new_tab(url.clone()));
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.cancel_auth();
                     }
                 });
+            }
+            if let Some(error) = &self.auth_error {
+                prefs::callout(ui, error, theme::ERROR);
+            }
+            prefs::divider(ui);
+            prefs::help(
+                ui,
+                "Secure browser sign-in. hfx receives the localhost callback and stores its login in a private local cache.",
+            );
+            if self.auth_account.signed_in
+                && ui
+                    .add_enabled(
+                        !busy && self.active.is_none(),
+                        egui::Button::new("Sign out of hfx"),
+                    )
+                    .clicked()
+            {
+                self.start_auth(ui.ctx(), AuthAction::Logout);
+            }
         });
-        ui.label(RichText::new("Uses your ChatGPT account for Codex inference. Model access and supported effort levels depend on your account.").size(11.0).color(theme::DIM));
+        prefs::card(ui, "codex_generation", |ui| {
+            prefs::heading(
+                ui,
+                Icon::Cpu,
+                "Model & reasoning",
+                "Choose the depth for your next task",
+            );
+            prefs::label(ui, "Model ID");
+            prefs::field(
+                ui,
+                &mut self.saved.settings.codex_model,
+                "Codex model identifier",
+                false,
+            );
+            if !self.auth_models.is_empty() {
+                egui::ComboBox::from_id_salt("codex_models")
+                    .selected_text("Choose a Codex model")
+                    .width(ui.available_width())
+                    .show_ui(ui, |ui| {
+                        for model in &self.auth_models {
+                            ui.selectable_value(
+                                &mut self.saved.settings.codex_model,
+                                model.clone(),
+                                model,
+                            );
+                        }
+                    });
+            }
+            prefs::divider(ui);
+            prefs::effort(ui, &mut self.saved.settings.effort);
+            prefs::help(
+                ui,
+                "Model access and supported effort levels depend on your ChatGPT account.",
+            );
+        });
     }
 
     fn overlays(&mut self, ctx: &egui::Context, now: f64) {
@@ -4141,9 +4367,13 @@ impl Harness {
     }
 
     fn load_preview(&mut self, ctx: &egui::Context, kind: &str) {
+        let kind = kind
+            .strip_suffix("-details")
+            .or_else(|| kind.strip_suffix("-advanced"))
+            .unwrap_or(kind);
         if matches!(
             kind,
-            "settings" | "appearance" | "codex" | "openrouter" | "git-attribution"
+            "settings" | "appearance" | "tools" | "codex" | "openrouter" | "git-attribution"
         ) {
             self.settings_open = true;
             self.saved.settings.provider = Provider::OpenAI;
@@ -4154,7 +4384,7 @@ impl Harness {
             }
             if kind == "appearance" {
                 self.settings_tab = 1;
-            } else if kind == "git-attribution" {
+            } else if matches!(kind, "tools" | "git-attribution") {
                 self.settings_tab = 2;
             }
             return;
@@ -5579,6 +5809,20 @@ mod tests {
     #[ignore = "writes headless visual QA artifacts"]
     fn export_headless_previews() {
         for (preview, width, height) in [
+            ("settings", 1180, 820),
+            ("settings", 720, 540),
+            ("appearance", 1180, 820),
+            ("appearance", 720, 540),
+            ("tools", 1180, 820),
+            ("tools", 720, 540),
+            ("codex", 1180, 820),
+            ("settings-details", 1180, 820),
+            ("settings-details", 720, 540),
+            ("appearance-details", 1180, 820),
+            ("appearance-details", 720, 540),
+            ("tools-details", 1180, 820),
+            ("tools-details", 720, 540),
+            ("tools-advanced", 1180, 820),
             ("markdown", 1180, 820),
             ("markdown", 720, 540),
             ("agent-tools", 1180, 820),
@@ -5794,6 +6038,22 @@ mod tests {
                         egui::PointerButton::Primary,
                         frame == 2,
                     ));
+                }
+                if (preview.ends_with("-details") || preview.ends_with("-advanced")) && frame == 2 {
+                    events.push(egui::Event::PointerMoved(pos2(width as f32 - 175.0, 260.0)));
+                    events.push(egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        phase: egui::TouchPhase::Move,
+                        delta: vec2(
+                            0.0,
+                            if preview == "tools-details" {
+                                -325.0
+                            } else {
+                                -4000.0
+                            },
+                        ),
+                        modifiers: egui::Modifiers::NONE,
+                    });
                 }
                 if preview == "git-attribution" && frame == 2 {
                     events.push(egui::Event::PointerMoved(pos2(width as f32 - 175.0, 260.0)));
@@ -6076,6 +6336,177 @@ mod tests {
         }
         assert_eq!(app.saved.settings.git_coauthor_email, "invalid address");
         assert_eq!(app.saved.settings.system_prompt, "Keep my instructions");
+    }
+
+    #[test]
+    fn settings_cards_fit_the_drawer_for_all_providers_and_tool_modes() {
+        use crate::state::{CommandMode, SearchProvider};
+        for width in [304.0, 372.0] {
+            for font_size in [13.0, 15.5, 19.0] {
+                let ctx = egui::Context::default();
+                let cc = eframe::CreationContext::_new_kittest(ctx.clone());
+                let mut app = Harness::new(&cc, Some("settings".into()));
+                app.saved.settings.font_size = font_size;
+                app.saved.settings.reveal_speed = 137.5;
+                for tab in 0..3 {
+                    for (provider, search, mode) in [
+                        (
+                            Provider::Codex,
+                            SearchProvider::DuckDuckGo,
+                            CommandMode::Trusted,
+                        ),
+                        (
+                            Provider::OpenAI,
+                            SearchProvider::Brave,
+                            CommandMode::Sandbox,
+                        ),
+                        (
+                            Provider::OpenRouter,
+                            SearchProvider::Searxng,
+                            CommandMode::Trusted,
+                        ),
+                        (
+                            Provider::Llama,
+                            SearchProvider::DuckDuckGo,
+                            CommandMode::Sandbox,
+                        ),
+                        (Provider::Demo, SearchProvider::Brave, CommandMode::Trusted),
+                    ] {
+                        app.saved.settings.provider = provider;
+                        app.saved.settings.search_provider = search;
+                        app.saved.settings.command_mode = mode;
+                        let mut output = ctx.run_ui(egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(pos2(0.0, 0.0), vec2(width, 2000.0))),
+                            ..Default::default()
+                        }, |ui| {
+                            prefs::style(ui);
+                            let right = ui.max_rect().right();
+                            prefs::tabs(ui, &mut app.settings_tab);
+                            match tab {
+                                0 => app.provider_settings(ui),
+                                1 => app.appearance_settings(ui),
+                                _ => app.tool_settings(ui),
+                            }
+                            assert!(ui.min_rect().right() <= right + 0.5,
+                                "tab {tab}, {provider:?}, width {width}: content extends to {}, expected <= {right}", ui.min_rect().right());
+                        });
+                        output.textures_delta.clear();
+                        assert_eq!(app.saved.settings.font_size, font_size);
+                        assert_eq!(app.saved.settings.reveal_speed, 137.5);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn settings_tabs_provider_selection_review_state_and_footer_are_interactive() {
+        let ctx = egui::Context::default();
+        let cc = eframe::CreationContext::_new_kittest(ctx.clone());
+        let mut app = Harness::new(&cc, Some("settings".into()));
+        app.saved.settings.reduced_motion = true;
+        let mut output = draw(
+            &mut app,
+            &ctx,
+            1180.0,
+            820.0,
+            0.0,
+            vec![],
+            egui::Modifiers::NONE,
+        );
+        output = click(
+            &mut app,
+            &ctx,
+            text_position(&output.shapes, "llama.cpp"),
+            0.2,
+        );
+        assert_eq!(app.saved.settings.provider, Provider::Llama);
+        output = click(
+            &mut app,
+            &ctx,
+            text_position(&output.shapes, "Appearance"),
+            0.4,
+        );
+        assert_eq!(app.settings_tab, 1);
+        text_position(&output.shapes, "READING PREVIEW");
+        output = click(
+            &mut app,
+            &ctx,
+            text_position(&output.shapes, "Reasoning summaries"),
+            0.6,
+        );
+        assert!(!app.saved.settings.show_reasoning);
+        output = click(&mut app, &ctx, text_position(&output.shapes, "Tools"), 0.8);
+        assert_eq!(app.settings_tab, 2);
+        output = click(
+            &mut app,
+            &ctx,
+            text_position(&output.shapes, "Review each tool action"),
+            1.0,
+        );
+        assert!(app.saved.settings.review_actions);
+        text_position(&output.shapes, "REVIEW MODE");
+        output = click(
+            &mut app,
+            &ctx,
+            text_position(&output.shapes, "Enable agent tools"),
+            1.2,
+        );
+        assert!(!app.saved.settings.tools_enabled);
+        text_position(&output.shapes, "TOOLS PAUSED");
+        output = click(
+            &mut app,
+            &ctx,
+            text_position(&output.shapes, "Review each tool action"),
+            1.4,
+        );
+        assert!(
+            app.saved.settings.review_actions,
+            "disabled preferences must be retained"
+        );
+        click(&mut app, &ctx, text_position(&output.shapes, "Done"), 1.6);
+        assert!(!app.settings_open);
+    }
+
+    #[test]
+    fn settings_footer_stays_visible_when_scrolling_a_small_window() {
+        let ctx = egui::Context::default();
+        let cc = eframe::CreationContext::_new_kittest(ctx.clone());
+        let mut app = Harness::new(&cc, Some("tools".into()));
+        app.saved.settings.reduced_motion = true;
+        let mut last = Vec::new();
+        for frame in 0..5 {
+            let events = if frame == 2 {
+                vec![
+                    egui::Event::PointerMoved(pos2(600.0, 300.0)),
+                    egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        phase: egui::TouchPhase::Move,
+                        delta: vec2(0.0, -4000.0),
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ]
+            } else {
+                vec![]
+            };
+            let output = draw(
+                &mut app,
+                &ctx,
+                720.0,
+                540.0,
+                frame as f64 * 0.2,
+                events,
+                egui::Modifiers::NONE,
+            );
+            let done = text_position(&output.shapes, "Done");
+            assert!(done.y > 470.0 && done.y < 540.0);
+            last = output.shapes;
+        }
+        let instructions = text_position(&last, "Assistant instructions");
+        assert!(
+            instructions.y > 170.0 && instructions.y < 470.0,
+            "bottom settings must be reachable: {instructions:?}"
+        );
     }
 
     #[test]

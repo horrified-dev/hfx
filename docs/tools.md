@@ -42,6 +42,33 @@ Choose **Strict workspace sandbox** for untrusted projects. On Linux, **bubblewr
 
 The timeout is configurable from 30 seconds to two hours (default 30 minutes). Both output pipes are drained, retaining up to 64 KiB per stream: the beginning and final diagnostics rather than only the beginning. Timeouts preserve partial output. Private command logs survive under `.hfx/command-logs/<run-id>/{stdout,stderr}.log`, capped at 16 MiB per stream; their folders contain Git ignore rules to avoid accidental staging. If durable logging is unavailable (for example a read-only project), the command still runs with bounded in-memory diagnostics and an explicit warning. Logs are retained until you remove them and can contain sensitive command output—do not publish them indiscriminately. On Unix the run folder is mode 0700 and log files are 0600. Stop/timeout cancels the active Unix command process group; deliberately detached jobs are outside that group. Windows currently cancels the direct command process.
 
+### Development servers and other background commands
+
+In trusted host mode, start a long-running service in the background, for example
+`bun run dev &`. Foreground commands still wait for the shell to exit; hfx does
+not guess that a slow build is a server or rewrite shell syntax.
+
+After a successful shell exit, hfx gives stdout/stderr up to 150 ms to finish
+draining. If either pipe remains open, the tool returns without waiting for the
+background service to exit. A runtime-owned reader keeps both pipes alive, avoids
+broken-pipe errors, and flushes subsequent output to the same private command
+logs. The usual capture and 16 MiB log limits still apply. If logs cannot be
+created, the result explicitly says so and output is drained without durable
+storage.
+
+A successful launch is **not** a readiness check. The assistant should poll the
+service with a bounded request before taking screenshots or using it, inspect
+its logs if startup fails, and stop it when finished. On Unix, the result reports
+the background process-group ID. Stop/timeout still cancels an active foreground
+command; Stop during a later tool does not retroactively stop an earlier
+background launch. Attached background groups are stopped when hfx's runtime
+shuts down. Fully redirected/deliberately detached jobs are not managed by those
+pipe readers. A failed shell with open pipes has its remaining group stopped
+instead of leaving a service running unnoticed.
+
+Strict sandbox lifetimes remain scoped to their invocation; do not assume a
+background server survives sandbox exit. There is no fallback to trusted mode.
+
 ### Web search and fetch
 
 **Settings → Tools → Web research** enables native `web_search` and `web_fetch` for all four inference providers, independently of shell command enablement. Search defaults to **DuckDuckGo**, with no key required. Free automated search can encounter rate limits/challenges; these are reported explicitly rather than fabricated results or repeated workaround attempts. For a dedicated API use **Brave Search API** with a session-only key or `BRAVE_SEARCH_API_KEY`. Alternatively configure a **SearXNG** search endpoint whose server allows `format=json`.

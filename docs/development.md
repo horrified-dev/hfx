@@ -78,7 +78,7 @@ cargo run --locked -- --preview=images
 cargo run --locked -- --preview=image-viewer
 ```
 
-Other previews: `markdown`, `reasoning`, `appearance`, `menu`, `codex`, `openrouter`, and `git-attribution`. The [Markdown preview](../artifacts/markdown-preview.png) demonstrates commit links, formatted labels, and literal code.
+Other previews: `markdown`, `reasoning`, `appearance`, `tools`, `menu`, `codex`, `openrouter`, and `git-attribution`. The [Markdown preview](../artifacts/markdown-preview.png) demonstrates commit links, formatted labels, and literal code.
 
 ### Refresh README screenshots
 
@@ -105,7 +105,15 @@ This writes previews to `artifacts/headless-*.png`, covering tool settings, web 
 
 ```bash
 HFX_PREVIEW_FILTER=welcome cargo test --locked export_headless_previews -- --ignored
+HFX_PREVIEW_FILTER=settings cargo test --locked export_headless_previews -- --ignored
+HFX_PREVIEW_FILTER=appearance cargo test --locked export_headless_previews -- --ignored
+HFX_PREVIEW_FILTER=tools cargo test --locked export_headless_previews -- --ignored
 ```
+
+Settings exports cover the Providers, Appearance, and Tools tabs at 1180×820
+and 720×540, including scrolled `-details` views and advanced tool settings.
+Layout tests check card widths, keyboard/pointer switches, provider selection,
+disabled preferences, and the fixed footer while scrolling.
 
 ### Shutdown diagnostics
 
@@ -130,6 +138,7 @@ See [Shutdown and diagnostics](usage.md#shutdown-and-diagnostics) for tracing an
 - [`src/notifications.rs`](../src/notifications.rs): nonblocking completion notifications and quiet audio playback.
 - [`scripts/`](../scripts/): per-user Linux/macOS installers and uninstallers, shared ownership helpers, and the Linux portable bundle builder.
 - [`src/state.rs`](../src/state.rs): persisted models, provider settings, interrupted-turn recovery.
+- [`src/settings_ui.rs`](../src/settings_ui.rs): layered settings cards, provider tiles, switches, and shared form controls.
 - [`src/theme.rs`](../src/theme.rs): palette, hfx monogram, vector icons, and styled controls.
 - [`src/markdown.rs`](../src/markdown.rs): selectable Markdown, inline link parsing, wrapped link hit regions, and code-block copy controls.
 

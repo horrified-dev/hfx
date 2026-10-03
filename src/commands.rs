@@ -18,6 +18,7 @@ use tokio::{
 
 const HALF_CAPTURE: usize = 32768;
 const LOG_LIMIT: usize = 16 * 1024 * 1024;
+const POST_EXIT_DRAIN_GRACE: Duration = Duration::from_millis(150);
 
 struct Capture {
     head: Vec<u8>,
@@ -26,6 +27,7 @@ struct Capture {
     log: Option<BufWriter<File>>,
     logged: usize,
     log_error: Option<String>,
+    live: bool,
 }
 
 impl Capture {
@@ -47,6 +49,7 @@ impl Capture {
             log: Some(BufWriter::new(file)),
             logged: 0,
             log_error: None,
+            live: false,
         })
     }
 
@@ -58,6 +61,7 @@ impl Capture {
             log: None,
             logged: 0,
             log_error: None,
+            live: false,
         }
     }
 
@@ -82,14 +86,21 @@ impl Capture {
             }
             self.logged += count;
         }
+        if self.live {
+            self.flush();
+        }
     }
 
-    fn text(&mut self) -> String {
+    fn flush(&mut self) {
         if let Some(log) = &mut self.log
             && let Err(error) = log.flush()
         {
             self.log_error = Some(error.to_string());
         }
+    }
+
+    fn text(&mut self) -> String {
+        self.flush();
         let tail = self.tail.make_contiguous();
         if self.total == self.head.len() + tail.len() {
             // These buffers are adjacent, so decode them together: the split
@@ -262,6 +273,7 @@ async fn execute_for(
             Capture::memory(),
         ),
     };
+    let durable_logs = out_capture.log.is_some() && err_capture.log.is_some();
     let stdout = Arc::new(Mutex::new(out_capture));
     let stderr = Arc::new(Mutex::new(err_capture));
     let child = process
@@ -275,17 +287,88 @@ async fn execute_for(
     };
     let out = running.child.stdout.take().ok_or("Missing stdout")?;
     let err = running.child.stderr.take().ok_or("Missing stderr")?;
-    let task = async {
-        let (status, _, _) = tokio::try_join!(
-            running.child.wait(),
-            drain(out, stdout.clone()),
-            drain(err, stderr.clone())
-        )?;
-        Ok::<_, std::io::Error>(status)
+    // Drain while the shell runs: waiting for it without reading can deadlock
+    // as soon as a build fills either pipe. EOF, however, is not shell exit:
+    // `dev-server &` inherits the writers and may keep them open indefinitely.
+    let out_capture = stdout.clone();
+    let err_capture = stderr.clone();
+    let mut pipes = Box::pin(async move {
+        tokio::try_join!(drain(out, out_capture), drain(err, err_capture)).map(|_| ())
+    });
+    let mut drained = false;
+    let wait = async {
+        tokio::select! {
+            status = running.child.wait() => status,
+            result = &mut pipes => {
+                drained = true;
+                result?;
+                running.child.wait().await
+            }
+        }
     };
-    let (exit, status) = match tokio::time::timeout(limit, task).await {
+    let outcome = match tokio::time::timeout(limit, wait).await {
         Ok(Ok(status)) => {
-            running.finished = true;
+            if drained {
+                Ok(status)
+            } else {
+                // Retain the ordinary final diagnostics without making a
+                // background service's lifetime the duration of this tool.
+                match tokio::time::timeout(POST_EXIT_DRAIN_GRACE, &mut pipes).await {
+                    Ok(result) => {
+                        drained = true;
+                        result
+                            .map(|()| status)
+                            .map_err(|error| format!("Command I/O failed: {error}"))
+                    }
+                    Err(_) => Ok(status),
+                }
+            }
+        }
+        Ok(Err(error)) => Err(format!("Command I/O failed: {error}")),
+        Err(_) => Err(format!(
+            "Command timed out after {:.3} seconds; process group stopped. Partial output preserved.",
+            limit.as_secs_f64()
+        )),
+    };
+    let mut background = String::new();
+    let (exit, status) = match outcome {
+        Ok(status) => {
+            if drained {
+                running.finished = true;
+            } else if status.success() {
+                // Keep read ends alive: dropping them could SIGPIPE the dev
+                // server on its next write. Flush each later chunk so follow-up
+                // tools can inspect readiness/errors even at low log volume.
+                stdout.lock().unwrap().live = true;
+                stderr.lock().unwrap().live = true;
+                let logging = if durable_logs {
+                    "Output continues to the command logs while hfx is running."
+                } else {
+                    "Background output is drained to keep the process alive, but no durable logs are available."
+                };
+                background = format!(
+                    "\nShell exited; output streams remain open (usually a background process). {logging} This does not confirm service readiness: check readiness before using it, and stop the service when finished."
+                );
+                #[cfg(unix)]
+                if let Some(pid) = running.pid {
+                    background.push_str(&format!("\nBackground process group: {pid}."));
+                }
+                // The task owns the process-group guard, so runtime shutdown or
+                // a read error still kills an attached background group. Normal
+                // EOF disarms it, avoiding a signal after that group has exited.
+                tokio::spawn(async move {
+                    let mut running = running;
+                    if pipes.await.is_ok() {
+                        running.finished = true;
+                    }
+                });
+            } else {
+                // A failed shell should not leave an unreported service alive.
+                running.kill();
+                let _ = tokio::time::timeout(POST_EXIT_DRAIN_GRACE, &mut pipes).await;
+                running.finished = true;
+                background = "\nShell failed with output streams still open; remaining process group stopped.".into();
+            }
             (
                 format!("Exit: {status}"),
                 if status.success() {
@@ -295,18 +378,13 @@ async fn execute_for(
                 },
             )
         }
-        result => {
+        Err(reason) => {
             running.kill();
             let _ = tokio::time::timeout(Duration::from_secs(1), running.child.wait()).await;
+            if !drained {
+                let _ = tokio::time::timeout(POST_EXIT_DRAIN_GRACE, &mut pipes).await;
+            }
             running.finished = true;
-            let reason = match result {
-                Ok(Err(error)) => format!("Command I/O failed: {error}"),
-                Err(_) => format!(
-                    "Command timed out after {:.3} seconds; process group stopped. Partial output preserved.",
-                    limit.as_secs_f64()
-                ),
-                _ => unreachable!(),
-            };
             (format!("Exit: {reason}"), ActionStatus::Failed)
         }
     };
@@ -343,7 +421,7 @@ async fn execute_for(
     };
     Ok(ToolOutput {
         text: format!(
-            "{exit}\n{out_text}\n{err_text}\n(command mode: {}; up to 64 KiB beginning/tail per stream)\n{notice}\n{warnings}{diagnostic}",
+            "{exit}\n{out_text}\n{err_text}\n(command mode: {}; up to 64 KiB beginning/tail per stream)\n{notice}{background}\n{warnings}{diagnostic}",
             settings.command_mode.label()
         ),
         status,
@@ -589,6 +667,253 @@ mod tests {
         assert!(std::fs::read_dir(outside).unwrap().next().is_none());
     }
 
+    struct FixtureProcess(std::path::PathBuf);
+
+    impl Drop for FixtureProcess {
+        fn drop(&mut self) {
+            if let Ok(pid) = std::fs::read_to_string(self.0.join("child.pid"))
+                && let Ok(pid) = pid.trim().parse::<i32>()
+                && pid > 0
+            {
+                // Only a PID written by this test's own temporary fixture.
+                unsafe {
+                    libc::kill(pid, libc::SIGKILL);
+                }
+            }
+        }
+    }
+
+    // Invoked in a separate test process, not the app/user's actual dev server.
+    #[test]
+    fn background_http_fixture() {
+        if std::env::var_os("HFX_BACKGROUND_HTTP_FIXTURE").is_none() {
+            return;
+        }
+        use std::io::Read;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        std::fs::write("address", listener.local_addr().unwrap().to_string()).unwrap();
+        std::fs::write("child.pid", std::process::id().to_string()).unwrap();
+        println!("fixture server ready");
+        eprintln!("fixture diagnostic ready");
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let mut buffer = [0; 4096];
+            let count = stream.read(&mut buffer).unwrap();
+            if count == 0 {
+                continue;
+            }
+            // These writes happen only AFTER the launching tool has returned.
+            // Closing its read ends would break a real server on its next log.
+            println!("served fixture request 🌿");
+            eprintln!("fixture request diagnostic");
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nready",
+                )
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn background_server_returns_before_exit_and_keeps_live_logs() {
+        let root = tempfile::tempdir().unwrap();
+        let _cleanup = FixtureProcess(root.path().to_owned());
+        let executable = std::env::current_exe()
+            .unwrap()
+            .to_string_lossy()
+            .replace('\'', "'\\''");
+        let script = format!(
+            "cd . && HFX_BACKGROUND_HTTP_FIXTURE=1 '{executable}' --exact commands::tests::background_http_fixture --nocapture &"
+        );
+        let start = std::time::Instant::now();
+        let output = execute_for(
+            root.path(),
+            &script,
+            &Settings::default(),
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            output.status,
+            ActionStatus::Complete,
+            "Background launch must not wait for server exit: {}",
+            output.text
+        );
+        println!(
+            "Background launch returned after {:.1} ms",
+            start.elapsed().as_secs_f64() * 1000.0
+        );
+        assert!(
+            output.text.contains("streams remain open"),
+            "{}",
+            output.text
+        );
+        assert!(output.text.contains("process group"), "{}", output.text);
+        child_pid(root.path()).await;
+        let address = std::fs::read_to_string(root.path().join("address")).unwrap();
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        for _ in 0..2 {
+            let response = client
+                .get(format!("http://{address}/"))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.text().await.unwrap(), "ready");
+        }
+        let directory = std::fs::read_dir(root.path().join(".hfx/command-logs"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.is_dir())
+            .unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let out = std::fs::read_to_string(directory.join("stdout.log")).unwrap();
+            let err = std::fs::read_to_string(directory.join("stderr.log")).unwrap();
+            if out.contains("served fixture request 🌿")
+                && err.contains("fixture request diagnostic")
+            {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "background output was not flushed to durable logs"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let followup = execute(root.path(), "printf 'next tool step'", &Settings::default())
+            .await
+            .unwrap();
+        assert_eq!(followup.status, ActionStatus::Complete);
+        assert!(followup.text.contains("next tool step"));
+    }
+
+    #[tokio::test]
+    async fn background_stderr_without_stdout_also_does_not_hold_the_tool_open() {
+        let root = tempfile::tempdir().unwrap();
+        let _cleanup = FixtureProcess(root.path().to_owned());
+        let output = execute_for(
+            root.path(),
+            "sleep 30 >/dev/null & echo $! > child.pid; printf 'launched'",
+            &Settings::default(),
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+        assert_eq!(output.status, ActionStatus::Complete, "{}", output.text);
+        assert!(output.text.contains("launched"));
+        assert!(output.text.contains("streams remain open"));
+    }
+
+    #[tokio::test]
+    async fn closed_pipes_do_not_mean_a_foreground_command_has_finished() {
+        let root = tempfile::tempdir().unwrap();
+        let output = execute_for(
+            root.path(),
+            "exec >/dev/null 2>&1; sleep 30 & echo $! > child.pid; wait",
+            &Settings::default(),
+            Duration::from_millis(150),
+        )
+        .await
+        .unwrap();
+        assert_eq!(output.status, ActionStatus::Failed);
+        assert!(output.text.contains("timed out"));
+        assert!(!output.text.contains("streams remain open"));
+        #[cfg(target_os = "linux")]
+        assert_child_stopped(&child_pid(root.path()).await).await;
+    }
+
+    #[tokio::test]
+    async fn failed_shell_stops_background_children_and_preserves_exit_status() {
+        let root = tempfile::tempdir().unwrap();
+        let _cleanup = FixtureProcess(root.path().to_owned());
+        let output = execute_for(
+            root.path(),
+            "sleep 30 & echo $! > child.pid; printf 'launch failed' >&2; exit 7",
+            &Settings::default(),
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+        assert_eq!(output.status, ActionStatus::Failed);
+        assert!(output.text.contains("exit status: 7"));
+        assert!(output.text.contains("launch failed"));
+        assert!(output.text.contains("remaining process group stopped"));
+        #[cfg(target_os = "linux")]
+        assert_child_stopped(&child_pid(root.path()).await).await;
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn background_process_group_is_stopped_when_runtime_shuts_down() {
+        let root = tempfile::tempdir().unwrap();
+        let _cleanup = FixtureProcess(root.path().to_owned());
+        let path = root.path().to_owned();
+        let pid = tokio::task::spawn_blocking(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let output = runtime
+                .block_on(execute(
+                    &path,
+                    "sleep 30 & echo $! > child.pid",
+                    &Settings::default(),
+                ))
+                .unwrap();
+            assert_eq!(output.status, ActionStatus::Complete);
+            let pid = runtime.block_on(child_pid(&path));
+            // The log reader may not have been polled after being spawned.
+            // Its future must own the entire Running guard even in that case.
+            runtime.shutdown_timeout(Duration::from_secs(2));
+            pid
+        })
+        .await
+        .unwrap();
+        assert_child_stopped(&pid).await;
+    }
+
+    #[tokio::test]
+    async fn background_launch_works_when_durable_logs_are_unavailable() {
+        let root = tempfile::tempdir().unwrap();
+        let _cleanup = FixtureProcess(root.path().to_owned());
+        std::fs::write(root.path().join(".hfx"), "not a directory").unwrap();
+        let output = execute_for(
+            root.path(),
+            "sleep 30 & echo $! > child.pid; printf 'started without logs'",
+            &Settings::default(),
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+        assert_eq!(output.status, ActionStatus::Complete);
+        assert!(output.text.contains("logs unavailable"));
+        assert!(output.text.contains("streams remain open"));
+        assert!(output.text.contains("started without logs"));
+    }
+
+    #[test]
+    fn live_capture_flushes_small_writes_without_growing_logs_past_the_cap() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("stdout.log");
+        let mut capture = Capture::new(&path).unwrap();
+        capture.live = true;
+        capture.push(b"ready\n");
+        assert_eq!(std::fs::read(&path).unwrap(), b"ready\n");
+        let bytes = [b'x'; 8192];
+        for _ in 0..(LOG_LIMIT / bytes.len() + 2) {
+            capture.push(&bytes);
+        }
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), LOG_LIMIT as u64);
+        assert_eq!(capture.head.len(), HALF_CAPTURE);
+        assert_eq!(capture.tail.len(), HALF_CAPTURE);
+        assert!(capture.warning().contains("capped"));
+    }
+
     async fn child_pid(root: &Path) -> String {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
         loop {
@@ -613,7 +938,12 @@ mod tests {
         loop {
             let stat = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
                 Ok(stat) => stat,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::NotFound
+                        || error.raw_os_error() == Some(libc::ESRCH) =>
+                {
+                    return;
+                }
                 Err(error) => panic!("Cannot inspect child {pid}: {error}"),
             };
             let state = stat

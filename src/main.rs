@@ -13,6 +13,7 @@ mod motion;
 mod notifications;
 mod persistence;
 mod sandbox;
+mod settings_ui;
 mod state;
 mod theme;
 mod tools;
