@@ -461,6 +461,41 @@ mod tests {
         );
     }
 
+    #[test]
+    fn command_schemas_explain_the_selected_environment_in_both_api_formats() {
+        for mode in [
+            crate::state::CommandMode::Trusted,
+            crate::state::CommandMode::Sandbox,
+        ] {
+            let settings = Settings {
+                command_mode: mode,
+                ..Default::default()
+            };
+            for responses in [true, false] {
+                let definitions = definitions_for(&settings, responses);
+                let command = definitions
+                    .iter()
+                    .find_map(|definition| {
+                        let function = if responses {
+                            definition
+                        } else {
+                            &definition["function"]
+                        };
+                        (function["name"] == "run_command").then_some(function)
+                    })
+                    .unwrap();
+                let description = command["description"].as_str().unwrap();
+                assert!(description.contains(mode.instructions()));
+                if mode == crate::state::CommandMode::Trusted {
+                    assert!(description.contains("Do not invent sandbox workarounds"));
+                    assert!(description.contains("CARGO_HOME"));
+                } else {
+                    assert!(description.contains("Cargo cache setup is handled automatically"));
+                }
+            }
+        }
+    }
+
     #[tokio::test]
     async fn image_tools_return_pixels_and_obey_workspace_read_boundaries() {
         let root = tempfile::tempdir().unwrap();
