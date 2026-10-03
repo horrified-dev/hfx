@@ -45,6 +45,24 @@ Rerun the installer to update, then restart hfx. To uninstall while preserving c
 
 See [Linux installation and desktop integration](docs/linux.md) for custom paths, launcher behavior, portable bundles, and completion alerts.
 
+### Install on macOS
+
+```bash
+./scripts/install-macos.sh --desktop-shortcut
+```
+
+Builds a per-user `~/Applications/hfx.app` bundle with the hfx icon, a `~/.local/bin/hfx` terminal link, and an optional Desktop shortcut. Source builds need Rust 1.95+ and Xcode Command Line Tools. Quit hfx before updating; `./scripts/uninstall-macos.sh` removes the app without deleting saved data. See the [macOS guide](docs/macos.md) for custom paths and unsigned-app security prompts.
+
+### Install on Windows
+
+From PowerShell in this checkout:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1 -DesktopShortcut
+```
+
+Builds a per-user installation under `%LOCALAPPDATA%\Programs\hfx`, with a Start-menu entry and optional Desktop shortcut. Source builds need Rust 1.95+ (MSVC) and the C++ Build Tools/Windows SDK. No administrator access or persistent execution-policy change is required. Quit hfx before updating; `scripts/uninstall-windows.ps1` preserves saved data. See the [Windows guide](docs/windows.md) for requirements, prebuilt binaries, custom paths, and uninstall commands.
+
 ## Connect a model
 
 Open **Settings → Providers** with the gear icon or **Ctrl/Cmd+,**.
@@ -100,6 +118,8 @@ Use **Ctrl** on Linux/Windows and **Cmd** on macOS.
 | [Provider setup](docs/providers.md) | Codex sign-in, API keys, compatible endpoints, llama.cpp, and provider capabilities |
 | [Using hfx](docs/usage.md) | Projects, attachments, queueing, steering, context compaction, persistence, and clean shutdown |
 | [Tools & security](docs/tools.md) | Tool reference, review mode, trusted commands, strict sandboxing, Git authentication/attribution, and web research |
+| [macOS installation](docs/macos.md) | Per-user app bundle, CLI/Desktop links, updates, security prompts, and data-preserving uninstall |
+| [Windows installation](docs/windows.md) | Per-user installation, Start-menu/Desktop shortcuts, MSVC requirements, updates, and uninstall |
 | [Linux integration](docs/linux.md) | Per-user installation, desktop launchers, portable bundles, completion alerts, and background rendering |
 | [Development & visual QA](docs/development.md) | Checks, scripted previews, screenshot regeneration, source map, and protocol references |
 
@@ -117,7 +137,7 @@ To explore a scripted preview without replacing saved chats:
 cargo run --locked -- --preview=chat
 ```
 
-See the [development guide](docs/development.md) for other previews, headless visual QA, and Linux installer tests.
+See the [development guide](docs/development.md) for other previews, headless visual QA, and platform installer tests.
 
 ## License
 

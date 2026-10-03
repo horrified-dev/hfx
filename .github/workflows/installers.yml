@@ -1,0 +1,38 @@
+name: Native installer checks
+
+on:
+  push:
+    paths: ['scripts/**', 'tests/**', 'assets/hfx.*', 'src/**', 'vendor/**', 'Cargo.*', '.github/workflows/installers.yml']
+  pull_request:
+    paths: ['scripts/**', 'tests/**', 'assets/hfx.*', 'src/**', 'vendor/**', 'Cargo.*', '.github/workflows/installers.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build native macOS executable
+        run: cargo build --release --locked
+      - name: Validate Bash syntax
+        run: /bin/bash -n scripts/install-macos.sh scripts/uninstall-macos.sh scripts/macos-common.sh
+      - name: Check macOS installer and native bundle
+        run: python3 tests/macos_install.py target/release/hfx
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build native Windows executable
+        run: cargo build --release --locked
+      - name: Check installer with Windows PowerShell 5.1 and real shortcuts
+        shell: powershell
+        run: ./tests/windows_install.ps1 -Binary target/release/hfx.exe
+      - name: Check installer with PowerShell 7 and real shortcuts
+        shell: pwsh
+        run: ./tests/windows_install.ps1 -Binary target/release/hfx.exe
