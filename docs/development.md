@@ -32,6 +32,22 @@ cargo build --release --locked
 python3 tests/linux_install.py target/release/hfx
 ```
 
+### Streaming and context microbenchmarks
+
+Two ignored tests exercise the streaming decoder and compaction planner with
+synthetic inputs; they do not contact providers or read saved conversations:
+
+```bash
+cargo test --locked profile_sse_decoding -- --ignored --nocapture
+cargo test --locked profile_compaction_planning -- --ignored --nocapture
+```
+
+The decoder benchmark covers fragmented long lines, many events delivered in one
+chunk, and multiline events. The planner benchmark uses 3,001 messages. Compare
+runs on the same machine and build profile; add `--release` to both commands for
+optimized-build measurements. These are diagnostic microbenchmarks, not
+end-to-end latency claims or timing assertions in the normal test suite.
+
 ### macOS installer checks
 
 All installer fixtures keep install paths and application data in a temporary directory under `target`; they do not install into your actual profile.

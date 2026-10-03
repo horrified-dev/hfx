@@ -351,13 +351,13 @@ impl Auth {
                 .or_else(|| value["data"].as_array())
                 .ok_or("Codex returned no model list")?;
             for model in data {
-                if let Some(id) = model["slug"].as_str().or_else(|| model["id"].as_str()) {
-                    if let Some(limit) = crate::backend::model_context_window(model) {
-                        self.context_windows
-                            .lock()
-                            .expect("Model metadata lock")
-                            .insert(id.to_owned(), limit);
-                    }
+                if let Some(id) = model["slug"].as_str().or_else(|| model["id"].as_str())
+                    && let Some(limit) = crate::backend::model_context_window(model)
+                {
+                    self.context_windows
+                        .lock()
+                        .expect("Model metadata lock")
+                        .insert(id.to_owned(), limit);
                 }
             }
             let mut models = data

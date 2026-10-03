@@ -79,24 +79,43 @@ pub struct Request {
     pub codex_auth: Option<crate::codex::Auth>,
 }
 
+const MAX_SSE_EVENT_BYTES: usize = 20 * 1024 * 1024;
+
 /// Decode SSE incrementally at byte boundaries, including split UTF-8,
 /// CRLF, multi-line data, comments, and a final event without a blank line.
 #[derive(Default)]
 pub struct SseDecoder {
+    // Only an unfinished line is buffered; previously scanned bytes are never
+    // rescanned or shifted for each new line in a large network chunk.
     buffer: Vec<u8>,
-    data: Vec<String>,
+    data: String,
+    has_data: bool,
 }
 
 impl SseDecoder {
     pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<String>, String> {
-        self.buffer.extend_from_slice(bytes);
-        if self.buffer.len() > 20 * 1024 * 1024 {
-            return Err("Streaming event is too large.".into());
-        }
         let mut events = Vec::new();
-        while let Some(newline) = self.buffer.iter().position(|&b| b == b'\n') {
-            let line = self.buffer.drain(..=newline).collect::<Vec<_>>();
-            self.line(&line[..line.len() - 1], &mut events)?;
+        for part in bytes.split_inclusive(|&b| b == b'\n') {
+            let complete = part.ends_with(b"\n");
+            let part = if complete {
+                &part[..part.len() - 1]
+            } else {
+                part
+            };
+            if self.buffer.len().saturating_add(part.len()) > MAX_SSE_EVENT_BYTES {
+                return Err("Streaming event is too large.".into());
+            }
+            if complete && self.buffer.is_empty() {
+                self.line(part, &mut events)?;
+            } else {
+                self.buffer.extend_from_slice(part);
+                if complete {
+                    let mut line = std::mem::take(&mut self.buffer);
+                    self.line(&line, &mut events)?;
+                    line.clear();
+                    self.buffer = line;
+                }
+            }
         }
         Ok(events)
     }
@@ -107,15 +126,30 @@ impl SseDecoder {
             .trim_end_matches('\r')
             .trim_start_matches('\u{feff}');
         if line.is_empty() {
-            if !self.data.is_empty() {
-                events.push(std::mem::take(&mut self.data).join("\n"));
+            if self.has_data {
+                events.push(std::mem::take(&mut self.data));
+                self.has_data = false;
             }
-        } else if let Some(data) = line.strip_prefix("data:") {
-            self.data
-                .push(data.strip_prefix(' ').unwrap_or(data).to_owned());
-            if self.data.iter().map(String::len).sum::<usize>() > 20 * 1024 * 1024 {
+        } else if let Some(data) = line
+            .strip_prefix("data:")
+            .or_else(|| (line == "data").then_some(""))
+        {
+            let data = data.strip_prefix(' ').unwrap_or(data);
+            // Include separators, even for empty data lines. A Vec<String> plus
+            // a sum of payload lengths leaves empty multiline events unbounded.
+            let length = self
+                .data
+                .len()
+                .saturating_add(data.len())
+                .saturating_add(usize::from(self.has_data));
+            if length > MAX_SSE_EVENT_BYTES {
                 return Err("Streaming event is too large.".into());
             }
+            if self.has_data {
+                self.data.push('\n');
+            }
+            self.data.push_str(data);
+            self.has_data = true;
         }
         Ok(())
     }
@@ -330,9 +364,10 @@ fn parse_event(
     tx: &Sender<Event>,
 ) -> Result<(), String> {
     if data.trim() == "[DONE]" {
-        turn.terminal = true;
-        if matches!(provider, Provider::OpenAI | Provider::Codex) {
-            turn.finish_output(tx);
+        // A transport sentinel is not a successful model completion. In
+        // particular, never execute partially streamed tools on a bare DONE.
+        if !turn.terminal {
+            return Err("The stream ended without a successful completion status; incomplete tool calls were not executed.".into());
         }
         return Ok(());
     }
@@ -397,6 +432,12 @@ fn parse_event(
                 }
                 if response["status"] == "incomplete" {
                     return Err(incomplete_message(response));
+                }
+                if response
+                    .get("status")
+                    .is_some_and(|status| status != "completed")
+                {
+                    return Err("The provider returned an unsuccessful completion status; incomplete tool calls were not executed.".into());
                 }
                 turn.terminal = true;
                 if let Some(items) = response["output"].as_array() {
@@ -638,29 +679,27 @@ pub async fn probe(settings: Settings) -> Result<Vec<ModelInfo>, String> {
         })
         .collect::<Vec<_>>();
     // llama.cpp's allocated slot window can be smaller than the trained window.
-    if settings.provider == Provider::Llama {
-        if let Ok(url) = endpoint(
+    if settings.provider == Provider::Llama
+        && let Ok(url) = endpoint(
             settings
                 .base_url()
                 .trim_end_matches('/')
                 .trim_end_matches("/v1"),
             "props",
             settings.provider,
-        ) {
-            let mut http = client()?.get(url).timeout(Duration::from_secs(3));
-            if !key.is_empty() {
-                http = http.bearer_auth(&key);
-            }
-            if let Ok(response) = http.send().await {
-                if response.status().is_success() {
-                    if let Ok(props) = response.json::<Value>().await {
-                        if let Some(limit) = model_context_window(&props) {
-                            for model in &mut models {
-                                model.context_window = Some(limit);
-                            }
-                        }
-                    }
-                }
+        )
+    {
+        let mut http = client()?.get(url).timeout(Duration::from_secs(3));
+        if !key.is_empty() {
+            http = http.bearer_auth(&key);
+        }
+        if let Ok(response) = http.send().await
+            && response.status().is_success()
+            && let Ok(props) = response.json::<Value>().await
+            && let Some(limit) = model_context_window(&props)
+        {
+            for model in &mut models {
+                model.context_window = Some(limit);
             }
         }
     }
@@ -3012,7 +3051,7 @@ mod tests {
                     .unwrap();
                 let (prefix, suffix) = response
                     .split_once("STEER_GATE")
-                    .map_or((response.as_str(), ""), |parts| parts);
+                    .unwrap_or((response.as_str(), ""));
                 write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", prefix.len() + suffix.len()).unwrap();
                 // Deliberately fragment the HTTP payload, including Unicode bytes.
                 for part in prefix.as_bytes().chunks(3) {
@@ -3776,6 +3815,161 @@ mod tests {
         assert_eq!(result["tool_call_id"], "q1");
         let answer: Value = serde_json::from_str(result["content"].as_str().unwrap()).unwrap();
         assert_eq!(answer["answer"], "Window");
+    }
+
+    #[test]
+    fn sse_limits_count_empty_data_lines_and_not_entire_network_chunks() {
+        let limit = MAX_SSE_EVENT_BYTES;
+        let mut decoder = SseDecoder::default();
+        decoder.push("data:\n".repeat(1024).as_bytes()).unwrap();
+        let large_line = format!("data: {}\n", "x".repeat(limit - 7));
+        assert!(decoder.push(large_line.as_bytes()).is_err());
+
+        let event = format!("data: {}\n\n", "x".repeat(64 * 1024));
+        let chunk = event.repeat(321);
+        assert!(chunk.len() > limit);
+        let events = SseDecoder::default().push(chunk.as_bytes()).unwrap();
+        assert_eq!(events.len(), 321);
+        assert!(events.iter().all(|event| event.len() == 64 * 1024));
+    }
+
+    #[test]
+    fn sse_rejects_oversized_complete_and_fragmented_lines() {
+        let mut line = vec![b'x'; MAX_SSE_EVENT_BYTES];
+        let mut decoder = SseDecoder::default();
+        assert!(decoder.push(&line).unwrap().is_empty());
+        assert!(decoder.push(b"x").is_err());
+        assert_eq!(decoder.buffer.len(), MAX_SSE_EVENT_BYTES);
+        line.extend_from_slice(b"x\n");
+        assert!(SseDecoder::default().push(&line).is_err());
+    }
+
+    #[test]
+    fn sse_empty_events_fragmented_lines_and_invalid_utf8() {
+        let input = format!("data:\n\ndata: {}\ndata:\n\ndata: tail", "🌿".repeat(256));
+        for size in [1, 7, 64, 4096] {
+            let mut decoder = SseDecoder::default();
+            let mut events = Vec::new();
+            for chunk in input.as_bytes().chunks(size) {
+                events.extend(decoder.push(chunk).unwrap());
+            }
+            events.extend(decoder.finish().unwrap());
+            assert_eq!(
+                events,
+                [
+                    String::new(),
+                    format!("{}\n", "🌿".repeat(256)),
+                    "tail".into()
+                ]
+            );
+            assert!(decoder.finish().unwrap().is_empty());
+        }
+        assert!(SseDecoder::default().push(b"data: \xff\n").is_err());
+        let mut decoder = SseDecoder::default();
+        decoder.push(b"data: \xf0").unwrap();
+        assert!(decoder.finish().is_err());
+    }
+
+    #[test]
+    #[ignore = "manual streaming decoder latency measurement"]
+    fn profile_sse_decoding() {
+        use std::{hint::black_box, time::Instant};
+        let cases = [
+            (
+                "fragmented long line",
+                format!("data: {}\n\n", "x".repeat(256 * 1024)),
+                64,
+            ),
+            (
+                "coalesced short events",
+                "data: x\n\n".repeat(100_000),
+                usize::MAX,
+            ),
+            (
+                "multiline event",
+                format!("{}\n", "data: x\n".repeat(10_000)),
+                4096,
+            ),
+        ];
+        for (name, input, size) in cases {
+            let started = Instant::now();
+            let mut decoder = SseDecoder::default();
+            for chunk in input.as_bytes().chunks(size) {
+                black_box(decoder.push(black_box(chunk)).unwrap());
+            }
+            black_box(decoder.finish().unwrap());
+            println!("{name}: {:.2} ms", started.elapsed().as_secs_f64() * 1000.0);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn done_marker_without_success_cannot_authorize_tools() {
+        for provider in [
+            Provider::Codex,
+            Provider::OpenAI,
+            Provider::OpenRouter,
+            Provider::Llama,
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let arguments = json!({"path":"must-not-exist.txt","content":"no"}).to_string();
+            let event = if matches!(provider, Provider::Codex | Provider::OpenAI) {
+                json!({"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc-1","call_id":"call-1","name":"write_file","arguments":arguments}})
+            } else {
+                json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"write_file","arguments":arguments}}]}}]})
+            };
+            let (url, _requests, server) = mock_server(vec![sse(&[event]) + "data: [DONE]\n\n"]);
+            let (tx, rx) = std::sync::mpsc::channel();
+            let task = tokio::spawn(run(
+                Request {
+                    settings: Settings {
+                        provider,
+                        openai_url: url.clone(),
+                        openai_key: "fixture".into(),
+                        openrouter_url: url.clone(),
+                        openrouter_key: "fixture".into(),
+                        llama_url: url.clone(),
+                        ..Settings::default()
+                    },
+                    workspace: root.path().into(),
+                    history: vec![Message::new(true, "A change".into(), 0.0, String::new())],
+                    session: "fixture".into(),
+                    codex_auth: (provider == Provider::Codex)
+                        .then(|| crate::codex::Auth::fixture(url)),
+                },
+                tx,
+            ));
+            loop {
+                match rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+                    Event::Error(error) => {
+                        assert!(error.contains("completion"), "{error}");
+                        break;
+                    }
+                    Event::ToolStarted(_) | Event::Approval { .. } | Event::Completed => {
+                        task.abort();
+                        panic!("Incomplete {provider:?} turns must not execute tools");
+                    }
+                    _ => {}
+                }
+            }
+            task.await.unwrap();
+            server.join().unwrap();
+            assert!(!root.path().join("must-not-exist.txt").exists());
+        }
+    }
+
+    #[test]
+    fn unsuccessful_responses_terminal_status_is_not_completion() {
+        let (tx, _) = std::sync::mpsc::channel();
+        for provider in [Provider::Codex, Provider::OpenAI] {
+            for event in ["response.done", "response.completed"] {
+                for status in ["cancelled", "in_progress", "queued"] {
+                    let mut turn = Turn::default();
+                    let data = json!({"type":event,"response":{"status":status,"output":[]}});
+                    assert!(parse_event(provider, &data.to_string(), &mut turn, &tx).is_err());
+                    assert!(!turn.terminal);
+                }
+            }
+        }
     }
 
     #[test]

@@ -90,16 +90,34 @@ impl Capture {
         {
             self.log_error = Some(error.to_string());
         }
-        let mut text = String::from_utf8_lossy(&self.head).into_owned();
-        if self.total > self.head.len() + self.tail.len() {
-            text.push_str(&format!(
-                "\n... {} bytes omitted; beginning and final diagnostics retained ...\n",
-                self.total - self.head.len() - self.tail.len()
-            ));
+        let tail = self.tail.make_contiguous();
+        if self.total == self.head.len() + tail.len() {
+            // These buffers are adjacent, so decode them together: the split
+            // at HALF_CAPTURE can be in the middle of a UTF-8 character.
+            let mut bytes = Vec::with_capacity(self.total);
+            bytes.extend_from_slice(&self.head);
+            bytes.extend_from_slice(tail);
+            return String::from_utf8(bytes)
+                .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned());
         }
-        text.push_str(&String::from_utf8_lossy(
-            &self.tail.iter().copied().collect::<Vec<_>>(),
+        // At a real truncation gap, omit partial characters rather than
+        // manufacturing replacement characters in otherwise valid diagnostics.
+        let head_end = match std::str::from_utf8(&self.head) {
+            Err(error) if error.error_len().is_none() => error.valid_up_to(),
+            _ => self.head.len(),
+        };
+        let tail_start = tail
+            .iter()
+            .take(3)
+            .take_while(|&&byte| byte & 0xc0 == 0x80)
+            .count();
+        let tail = &tail[tail_start..];
+        let mut text = String::from_utf8_lossy(&self.head[..head_end]).into_owned();
+        text.push_str(&format!(
+            "\n... {} bytes omitted; beginning and final diagnostics retained ...\n",
+            self.total - head_end - tail.len()
         ));
+        text.push_str(&String::from_utf8_lossy(tail));
         text
     }
 
@@ -338,6 +356,49 @@ async fn execute_for(
 mod tests {
     use super::*;
 
+    #[test]
+    fn capture_preserves_unicode_across_head_tail_and_read_boundaries() {
+        for prefix in [HALF_CAPTURE - 3, HALF_CAPTURE - 2, HALF_CAPTURE - 1] {
+            let text = format!("{}🌿 café 世界", "x".repeat(prefix));
+            let mut capture = Capture::memory();
+            for bytes in text.as_bytes().chunks(7) {
+                capture.push(bytes);
+            }
+            assert!(
+                capture.text() == text,
+                "capture changed valid UTF-8 at prefix {prefix}"
+            );
+        }
+    }
+
+    #[test]
+    fn capture_truncates_only_complete_utf8_characters() {
+        // Vary the suffix to place the retained tail inside each byte of an emoji.
+        for suffix in ["", "x", "xx", "xxx"] {
+            let text = format!(
+                "{}{}{suffix}",
+                "x".repeat(HALF_CAPTURE - 1),
+                "🌿".repeat(HALF_CAPTURE)
+            );
+            let mut capture = Capture::memory();
+            for bytes in text.as_bytes().chunks(8192) {
+                capture.push(bytes);
+            }
+            let output = capture.text();
+            assert!(!output.contains('\u{fffd}'));
+            let (head, rest) = output.split_once("\n... ").unwrap();
+            let (notice, tail) = rest.split_once('\n').unwrap();
+            let omitted: usize = notice.split_whitespace().next().unwrap().parse().unwrap();
+            assert_eq!(head.len() + tail.len() + omitted, text.len());
+            assert!(head == "x".repeat(HALF_CAPTURE - 1));
+            assert!(tail.ends_with(&format!("🌿{suffix}")));
+            assert!(text.ends_with(tail));
+        }
+        let mut invalid = Capture::memory();
+        invalid.push(b"invalid: \xff\n");
+        assert_eq!(invalid.text(), "invalid: \u{fffd}\n");
+    }
+
     #[tokio::test]
     async fn trusted_commands_preserve_the_inherited_host_environment() {
         // Launch this one test in a child with a fixture environment. Never
@@ -528,6 +589,47 @@ mod tests {
         assert!(std::fs::read_dir(outside).unwrap().next().is_none());
     }
 
+    async fn child_pid(root: &Path) -> String {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Ok(pid) = std::fs::read_to_string(root.join("child.pid"))
+                && pid.trim().parse::<u32>().is_ok()
+            {
+                return pid.trim().to_owned();
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "child did not publish its PID"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn assert_child_stopped(pid: &str) {
+        // SIGKILL delivery to descendants is asynchronous. Reaping the shell
+        // does not guarantee every child has already reached its terminal state.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let stat = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+                Ok(stat) => stat,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+                Err(error) => panic!("Cannot inspect child {pid}: {error}"),
+            };
+            let state = stat
+                .rsplit_once(") ")
+                .and_then(|(_, fields)| fields.chars().next());
+            if matches!(state, Some('Z' | 'X')) {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "child {pid} still running: {state:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
     #[tokio::test]
     async fn timeout_keeps_partial_output_and_stops_children() {
         let root = tempfile::tempdir().unwrap();
@@ -544,9 +646,7 @@ mod tests {
         assert!(output.text.contains("build started"));
         #[cfg(target_os = "linux")]
         {
-            let pid = std::fs::read_to_string(root.path().join("child.pid")).unwrap();
-            let status = std::fs::read_to_string(format!("/proc/{}/stat", pid.trim()));
-            assert!(status.is_err() || status.unwrap().split_whitespace().nth(2) == Some("Z"));
+            assert_child_stopped(&child_pid(root.path()).await).await;
         }
     }
 
@@ -562,21 +662,12 @@ mod tests {
             )
             .await
         });
-        for _ in 0..100 {
-            if root.path().join("child.pid").exists() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-        assert!(root.path().join("child.pid").exists());
+        let _ = child_pid(root.path()).await;
         task.abort();
         let _ = task.await;
-        tokio::time::sleep(Duration::from_millis(20)).await;
         #[cfg(target_os = "linux")]
         {
-            let pid = std::fs::read_to_string(root.path().join("child.pid")).unwrap();
-            let status = std::fs::read_to_string(format!("/proc/{}/stat", pid.trim()));
-            assert!(status.is_err() || status.unwrap().split_whitespace().nth(2) == Some("Z"));
+            assert_child_stopped(&child_pid(root.path()).await).await;
         }
         assert!(root.path().join(".hfx/command-logs").is_dir());
     }

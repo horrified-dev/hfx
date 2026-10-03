@@ -118,28 +118,32 @@ pub fn plan(history: &[Value], limit: u64, fixed_cost: u64) -> Option<Plan> {
     let latest_user = history.iter().rposition(user_request)?;
     let target = limit / 2;
     let mut pending = HashSet::new();
+    // Maintain the remaining cost instead of rescanning every suffix (O(n²)).
+    let mut remaining_cost = estimate_items(history);
+    let latest_user_cost = estimate(&history[latest_user]) + 8;
     for (index, item) in history.iter().enumerate() {
-        if item["type"] == "function_call" {
-            if let Some(id) = item["call_id"].as_str() {
-                pending.insert(id.to_owned());
-            }
+        remaining_cost -= estimate(item) + 8;
+        if item["type"] == "function_call"
+            && let Some(id) = item["call_id"].as_str()
+        {
+            pending.insert(id);
         }
         if let Some(calls) = item["tool_calls"].as_array() {
             for call in calls {
                 if let Some(id) = call["id"].as_str() {
-                    pending.insert(id.to_owned());
+                    pending.insert(id);
                 }
             }
         }
-        if item["type"] == "function_call_output" {
-            if let Some(id) = item["call_id"].as_str() {
-                pending.remove(id);
-            }
+        if item["type"] == "function_call_output"
+            && let Some(id) = item["call_id"].as_str()
+        {
+            pending.remove(id);
         }
-        if item["role"] == "tool" {
-            if let Some(id) = item["tool_call_id"].as_str() {
-                pending.remove(id);
-            }
+        if item["role"] == "tool"
+            && let Some(id) = item["tool_call_id"].as_str()
+        {
+            pending.remove(id);
         }
         let cut = index + 1;
         // There must be older context to summarize; never summarize away the
@@ -151,12 +155,7 @@ pub fn plan(history: &[Value], limit: u64, fixed_cost: u64) -> Option<Plan> {
             continue;
         }
         let repeated_user = latest_user < cut;
-        let tail_cost = estimate_items(&history[cut..])
-            + if repeated_user {
-                estimate(&history[latest_user]) + 8
-            } else {
-                0
-            };
+        let tail_cost = remaining_cost + if repeated_user { latest_user_cost } else { 0 };
         if tail_cost + fixed_cost <= target {
             let mut tail = history[cut..].to_vec();
             if repeated_user {
@@ -197,6 +196,67 @@ pub fn chunks(text: &str, max_bytes: usize) -> Vec<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn planning_chooses_the_earliest_affordable_safe_cut() {
+        for responses in [false, true] {
+            let call = if responses {
+                json!({"type":"function_call","call_id":"a","name":"read_file","arguments":"{}"})
+            } else {
+                json!({"role":"assistant","tool_calls":[{"id":"a","function":{"name":"read_file","arguments":"{}"}}]})
+            };
+            let result = if responses {
+                json!({"type":"function_call_output","call_id":"a","output":"old result"})
+            } else {
+                json!({"role":"tool","tool_call_id":"a","content":"old result"})
+            };
+            let user = json!({"role":"user","content":"latest request"});
+            let history = vec![
+                json!({"role":"user","content":"old context"}),
+                call,
+                result,
+                user.clone(),
+                json!({"role":"assistant","content":"recent response"}),
+            ];
+            for fixed in [0, 100] {
+                for limit in (0..1000).step_by(7) {
+                    let expected = [1, 3, 4, 5].into_iter().find(|cut| {
+                        let repeated = if *cut > 3 { estimate(&user) + 8 } else { 0 };
+                        estimate_items(&history[*cut..]) + repeated + fixed <= limit / 2
+                    });
+                    let actual = plan(&history, limit, fixed);
+                    assert_eq!(actual.as_ref().map(|p| p.prefix.len()), expected);
+                    if let Some(plan) = actual {
+                        let cut = plan.prefix.len();
+                        let mut tail = history[cut..].to_vec();
+                        if cut > 3 {
+                            tail.insert(0, user.clone());
+                        }
+                        assert_eq!(plan.prefix, history[..cut]);
+                        assert_eq!(plan.tail, tail);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "manual context compaction planner latency measurement"]
+    fn profile_compaction_planning() {
+        use std::{hint::black_box, time::Instant};
+        let mut history = vec![json!({"role":"user","content":"keep this request"})];
+        history.extend(
+            (0..3000).map(|_| json!({"role":"assistant","content":"response".repeat(100)})),
+        );
+        let started = Instant::now();
+        assert!(plan(black_box(&history), 1024, 100).is_some());
+        println!(
+            "compaction plan, {} messages: {:.2} ms",
+            history.len(),
+            started.elapsed().as_secs_f64() * 1000.0
+        );
+    }
+
     #[test]
     fn threshold_and_images_are_budgeted_without_base64_inflation() {
         assert!(!at_threshold(7499, 10000));

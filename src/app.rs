@@ -5618,10 +5618,10 @@ mod tests {
         ] {
             let ctx = egui::Context::default();
             let cc = eframe::CreationContext::_new_kittest(ctx.clone());
-            if let Ok(filter) = std::env::var("HFX_PREVIEW_FILTER") {
-                if !preview.starts_with(&filter) {
-                    continue;
-                }
+            if let Ok(filter) = std::env::var("HFX_PREVIEW_FILTER")
+                && !preview.starts_with(&filter)
+            {
+                continue;
             }
             let is_chat_menu = preview.starts_with("chat-menu");
             let mut app = Harness::new(
@@ -6365,7 +6365,7 @@ mod tests {
         events.send(Event::Completed).unwrap();
         assert_eq!(logic_tick(&mut app, &ctx, false, false), BACKGROUND_TICK);
         let reply = &app.saved.chats[0].messages[1];
-        assert!(reply.text.len() > 0 && reply.text.len() <= EVENTS_PER_TICK * "🌿".len());
+        assert!(!reply.text.is_empty() && reply.text.len() <= EVENTS_PER_TICK * "🌿".len());
         assert!(
             app.active.is_some(),
             "one tick must yield before draining a whole burst"
