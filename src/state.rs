@@ -425,6 +425,8 @@ pub struct Message {
     #[serde(default)]
     pub timeline: Vec<ReplyBlock>,
     pub elapsed: f32,
+    #[serde(default)]
+    pub model_seconds: f32,
     pub tokens: u64,
     #[serde(default)]
     pub context_checkpoint: Option<ContextCheckpoint>,
@@ -456,6 +458,7 @@ impl Message {
             activities: Vec::new(),
             timeline: Vec::new(),
             elapsed: 0.0,
+            model_seconds: 0.0,
             tokens: 0,
             context_checkpoint: None,
             context_tokens: 0,
@@ -686,7 +689,9 @@ impl Default for Saved {
 }
 
 impl Saved {
-    pub fn restore(&mut self) {
+    /// Repair references after live chat edits without touching turns or queues.
+    /// Restart-only interruption recovery belongs in `restore`, not here.
+    pub fn repair_chat_selection(&mut self) {
         if self.projects.is_empty() {
             *self = Self::default();
             return;
@@ -699,6 +704,11 @@ impl Saved {
         if !self.chats.iter().any(|c| c.id == self.selected) {
             self.selected = self.chats[0].id;
         }
+    }
+
+    /// Recover durable state at startup, when no backend task is still running.
+    pub fn restore(&mut self) {
+        self.repair_chat_selection();
         for chat in &mut self.chats {
             if !chat.queue.is_empty() {
                 chat.queue_paused = true;
@@ -1076,6 +1086,69 @@ mod tests {
                 && restored.brave_search_key.is_empty()
         );
     }
+    #[test]
+    fn chat_selection_repair_preserves_live_turns_and_queue_state() {
+        let mut saved = Saved::default();
+        let mut message = Message::new(false, "Live progress".into(), 0.0, "test".into());
+        message.status = Status::Streaming;
+        message.compacting = true;
+        for (id, status) in [
+            ("running", ActionStatus::Running),
+            ("waiting", ActionStatus::Waiting),
+        ] {
+            message.activities.push(Activity {
+                id: id.into(),
+                name: "run_command".into(),
+                arguments: "{}".into(),
+                result: "".into(),
+                status,
+                elapsed: 0.0,
+                change: None,
+                images: Vec::new(),
+            });
+        }
+        saved.chats[0].messages.push(message);
+        let mut queued = QueuedMessage::new("Dispatched guidance".into(), Vec::new());
+        queued.dispatched = true;
+        saved.chats[0].queue.push(queued);
+        let mut paused = Chat::new(saved.projects[0].id);
+        paused
+            .queue
+            .push(QueuedMessage::new("Paused follow-up".into(), Vec::new()));
+        paused.queue_paused = true;
+        saved.chats.push(paused);
+        let live_chats = serde_json::to_value(&saved.chats).unwrap();
+        saved.chats.push(Chat::new(Uuid::nil()));
+        saved.selected = saved.chats[2].id;
+
+        saved.repair_chat_selection();
+
+        assert_eq!(saved.selected, saved.chats[0].id);
+        assert_eq!(serde_json::to_value(&saved.chats).unwrap(), live_chats);
+        assert!(saved.chats[0].queue[0].dispatched);
+        assert!(!saved.chats[0].queue_paused);
+        assert!(saved.chats[1].queue_paused);
+    }
+
+    #[test]
+    fn chat_selection_repair_creates_a_valid_fallback_when_empty() {
+        let mut saved = Saved::default();
+        let project = saved.projects[0].id;
+        saved.chats.clear();
+        saved.selected = Uuid::nil();
+        saved.repair_chat_selection();
+        assert_eq!(saved.chats.len(), 1);
+        assert_eq!(saved.chats[0].project, project);
+        assert_eq!(saved.selected, saved.chats[0].id);
+
+        saved.projects.clear();
+        saved.repair_chat_selection();
+        assert_eq!(saved.projects.len(), 1);
+        assert_eq!(saved.chats.len(), 1);
+        assert_eq!(saved.chats[0].project, saved.projects[0].id);
+        assert_eq!(saved.selected, saved.chats[0].id);
+    }
+
     #[test]
     fn restore_recovers_interrupted_turns_and_invalid_selection() {
         let mut saved = Saved::default();

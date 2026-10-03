@@ -15,7 +15,7 @@ pub fn estimate(value: &Value) -> u64 {
     match value {
         Value::String(s) if s.starts_with("data:image/") => 4096,
         Value::String(s) => (s.len() as u64).div_ceil(3),
-        Value::Array(values) => values.iter().map(estimate).sum::<u64>() + values.len() as u64 * 8,
+        Value::Array(values) => estimate_items(values),
         Value::Object(fields) if value["type"] == "image_generation_call" => {
             4096 + fields
                 .iter()
@@ -29,6 +29,12 @@ pub fn estimate(value: &Value) -> u64 {
             .sum(),
         _ => 4,
     }
+}
+
+/// Estimate borrowed history directly, without cloning multi-megabyte tool
+/// outputs into a temporary JSON array on every request/tool boundary.
+pub fn estimate_items(values: &[Value]) -> u64 {
+    values.iter().map(estimate).sum::<u64>() + values.len() as u64 * 8
 }
 
 /// Summary requests receive readable reference data, not opaque state or image payloads.
@@ -144,11 +150,18 @@ pub fn plan(history: &[Value], limit: u64, fixed_cost: u64) -> Option<Plan> {
         {
             continue;
         }
-        let mut tail = history[cut..].to_vec();
-        if latest_user < cut {
-            tail.insert(0, history[latest_user].clone());
-        }
-        if estimate(&json!(tail)) + fixed_cost <= target {
+        let repeated_user = latest_user < cut;
+        let tail_cost = estimate_items(&history[cut..])
+            + if repeated_user {
+                estimate(&history[latest_user]) + 8
+            } else {
+                0
+            };
+        if tail_cost + fixed_cost <= target {
+            let mut tail = history[cut..].to_vec();
+            if repeated_user {
+                tail.insert(0, history[latest_user].clone());
+            }
             return Some(Plan {
                 prefix: history[..cut].to_vec(),
                 tail,
@@ -257,5 +270,30 @@ mod tests {
         assert_eq!(wire.len(), 3);
         assert_eq!(messages[0].text, "visible old answer");
         assert!(!json!(wire).to_string().contains("visible old answer"));
+    }
+    #[test]
+    #[ignore = "manual allocation/latency measurement"]
+    fn profile_large_history_budgeting() {
+        use std::{hint::black_box, time::Instant};
+        let body = "source and command output\n".repeat(2600);
+        let history: Vec<Value> = (0..64)
+            .map(|_| json!({"role":"tool","content":body}))
+            .collect();
+        assert_eq!(estimate(&json!(history)), estimate_items(&history));
+        for borrowed in [false, true] {
+            let started = Instant::now();
+            for _ in 0..500 {
+                black_box(if borrowed {
+                    estimate_items(black_box(&history))
+                } else {
+                    estimate(&json!(black_box(&history)))
+                });
+            }
+            println!(
+                "context estimate borrowed={borrowed}: {:.2} ms / 500 iterations ({} KiB history)",
+                started.elapsed().as_secs_f64() * 1000.0,
+                history.len() * body.len() / 1024
+            );
+        }
     }
 }

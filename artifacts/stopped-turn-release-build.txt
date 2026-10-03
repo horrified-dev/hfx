@@ -1,0 +1,2 @@
+   Compiling hfx v0.1.0 (/home/lord/Documents/hfx)
+    Finished `release` profile [optimized] target(s) in 1m 08s

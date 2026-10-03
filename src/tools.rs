@@ -140,9 +140,9 @@ pub fn definitions_for(settings: &Settings, openai: bool) -> Vec<Value> {
         ),
         (
             "read_file",
-            "Read a UTF-8 text file inside the workspace, up to 64 KiB.",
-            json!({"path":{"type":"string"}}),
-            vec!["path"],
+            "Read a workspace UTF-8 file of any size. offset is a zero-based byte position (null starts at 0); max_bytes is an optional page size (null uses the context-aware budget). Use null for unspecified values. Large reads succeed with a bounded page, eof=false and next_offset; continue at next_offset when more is needed. Never claim a partial page is the whole file. UTF-8 boundaries are preserved. Limits apply to each response, not file size.",
+            json!({"path":{"type":"string"},"offset":{"type":["integer","null"],"minimum":0},"max_bytes":{"type":["integer","null"],"minimum":4}}),
+            vec!["path", "offset", "max_bytes"],
         ),
         (
             "view_image",
@@ -236,22 +236,37 @@ pub fn workspace_path(root: &Path, relative: &str, writing: bool) -> Result<Path
     }
 }
 
+#[cfg(test)]
 pub fn read_text(root: &Path, relative: &str) -> Result<String, String> {
-    let path = workspace_path(root, relative, false)?;
-    let metadata = path.metadata().map_err(|e| e.to_string())?;
-    if !metadata.is_file() {
-        return Err("Choose a regular text file.".into());
-    }
-    if metadata.len() > 65536 {
-        return Err("File exceeds the 64 KiB context limit.".into());
-    }
-    std::fs::read_to_string(path).map_err(|e| format!("Cannot read text file: {e}"))
+    crate::file_read::read(
+        root,
+        relative,
+        &json!({}),
+        crate::file_read::default_budget(&Settings::default()),
+    )
+    .map(|page| page.result(relative))
 }
 
+#[cfg(test)]
 pub async fn execute_with_settings(
     root: PathBuf,
     call: ToolCall,
     settings: &Settings,
+) -> Result<ToolOutput, String> {
+    execute_with_read_budget(
+        root,
+        call,
+        settings,
+        crate::file_read::default_budget(settings),
+    )
+    .await
+}
+
+pub async fn execute_with_read_budget(
+    root: PathBuf,
+    call: ToolCall,
+    settings: &Settings,
+    read_budget: usize,
 ) -> Result<ToolOutput, String> {
     let args: Value = serde_json::from_str(&call.arguments)
         .map_err(|e| format!("Invalid tool arguments: {e}"))?;
@@ -288,7 +303,8 @@ pub async fn execute_with_settings(
                     images: vec![attachment],
                 })
             }
-            "read_file" => read_text(&root, relative).map(ToolOutput::complete),
+            "read_file" => crate::file_read::read(&root, relative, &args, read_budget)
+                .map(|page| ToolOutput::complete(page.result(relative))),
             "list_files" => {
                 let path = workspace_path(&root, relative, false)?;
                 let mut entries = std::fs::read_dir(path)

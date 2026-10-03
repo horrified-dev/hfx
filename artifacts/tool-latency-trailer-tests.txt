@@ -1,0 +1,10 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.15s
+     Running unittests src/main.rs (target/debug/deps/hfx-f921778c23924b72)
+
+running 1 test
+Llama: completed tool while DONE was withheld after 105.64ms
+OpenRouter: completed tool while DONE was withheld after 106.65ms
+test backend::tests::completed_chat_tool_turn_does_not_wait_for_delayed_done_and_keeps_usage ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 146 filtered out; finished in 0.22s
+

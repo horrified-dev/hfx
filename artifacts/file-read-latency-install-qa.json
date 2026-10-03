@@ -1,0 +1,30 @@
+{
+  "status": "passed",
+  "fixture_only": true,
+  "commands": [
+    {
+      "command": [
+        "./scripts/install-linux.sh",
+        "--no-build",
+        "--desktop-shortcut"
+      ],
+      "stdout": "Desktop shortcut: /home/lord/Documents/hfx/target/file-read-install-qa-9p7_c6tv/home/Desktop/hfx.desktop\nApplication launcher: /home/lord/Documents/hfx/target/file-read-install-qa-9p7_c6tv/data/applications/hfx.desktop\n\nInstalled hfx: /home/lord/Documents/hfx/target/file-read-install-qa-9p7_c6tv/bin/hfx\nFind \u201chfx\u201d in your application menu and pin it to your dock.\nYour desktop may require right-click \u2192 Allow Launching (and a desktop-icons extension on GNOME).\nFor terminal launching, add /home/lord/Documents/hfx/target/file-read-install-qa-9p7_c6tv/bin to PATH.\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "./scripts/install-linux.sh",
+        "--no-build"
+      ],
+      "stdout": "Desktop shortcut: /home/lord/Documents/hfx/target/file-read-install-qa-9p7_c6tv/home/Desktop/hfx.desktop\nApplication launcher: /home/lord/Documents/hfx/target/file-read-install-qa-9p7_c6tv/data/applications/hfx.desktop\n\nInstalled hfx: /home/lord/Documents/hfx/target/file-read-install-qa-9p7_c6tv/bin/hfx\nFind \u201chfx\u201d in your application menu and pin it to your dock.\nFor terminal launching, add /home/lord/Documents/hfx/target/file-read-install-qa-9p7_c6tv/bin to PATH.\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "./scripts/uninstall-linux.sh"
+      ],
+      "stdout": "hfx uninstalled. Saved chats, preferences, credentials, and workspace files were preserved.\n",
+      "stderr": ""
+    }
+  ]
+}

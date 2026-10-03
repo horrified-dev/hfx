@@ -48,6 +48,9 @@ Agent access: Settings → Tools selects trusted host commands or strict confine
 Trusted commands run as you with normal Git/SSH and desktop access, and can read
 credentials/change files outside the project. Use only with code you trust.
 Commands default to a 30-minute timeout and preserve private workspace logs.
+Files are not refused at 64 KiB: large UTF-8 files support context-aware pages.
+Independent reads run up to four at a time; writes and reviewed actions stay ordered.
+Hover a reply's elapsed time to distinguish model/network time from tool runtimes.
 Web search/fetch work with every provider. DuckDuckGo needs no key; Brave Search
 API and SearXNG are configurable alternatives. Web content is reference data.
 

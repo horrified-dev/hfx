@@ -4,6 +4,7 @@ mod backend;
 mod codex;
 mod commands;
 mod context;
+mod file_read;
 mod lifecycle;
 #[cfg(target_os = "linux")]
 mod linux_desktop;

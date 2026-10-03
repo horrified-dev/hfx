@@ -700,6 +700,7 @@ impl Harness {
             }
             Event::ResponsesContext(items) => message.response_items = items.into(),
             Event::Usage(n) => message.tokens += n,
+            Event::ModelTime(seconds) => message.model_seconds += seconds,
             Event::ContextUsage {
                 tokens,
                 estimated,
@@ -1348,7 +1349,7 @@ impl Harness {
                     });
                 if let Some(id) = delete {
                     self.saved.chats.retain(|c| c.id != id);
-                    self.saved.restore();
+                    self.saved.repair_chat_selection();
                     self.reveals.retain(|id, _| {
                         self.saved
                             .chats
@@ -2089,7 +2090,11 @@ impl Harness {
                     ActionStatus::Failed => " · failed".into(),
                     ActionStatus::Cancelled => " · cancelled".into(),
                     ActionStatus::Complete if activity.elapsed >= 0.1 => {
-                        format!(" · {:.1}s", activity.elapsed)
+                        if activity.elapsed < 1.0 {
+                            format!(" · {:.0}ms", activity.elapsed * 1000.0)
+                        } else {
+                            format!(" · {:.1}s", activity.elapsed)
+                        }
                     }
                     _ => String::new(),
                 };
@@ -2962,7 +2967,8 @@ impl Harness {
                     ))
                     .size(10.0)
                     .color(theme::DIM),
-                );
+                ).on_hover_text(format!("Recorded model + network: {:.2}s (excludes compaction)\nSum of tool runtimes/waits: {:.2}s (excludes approvals; parallel tools overlap)\nTotal elapsed: {:.2}s",
+                    message.model_seconds, message.activities.iter().map(|a| a.elapsed).sum::<f32>(), message.elapsed));
             });
         }
     }
@@ -5073,6 +5079,126 @@ mod tests {
                     running
                 );
             }
+        }
+    }
+
+    #[test]
+    fn deleting_another_chat_preserves_the_live_turn_tools_and_steering() {
+        for select_deleted in [false, true] {
+            let ctx = egui::Context::default();
+            let cc = eframe::CreationContext::_new_kittest(ctx.clone());
+            let mut app = Harness::new(&cc, Some("actions".into()));
+            let original = app.saved.selected;
+            let reply_id = app.saved.chats[0].messages[1].id;
+            app.saved.settings.provider = Provider::OpenAI;
+            app.saved.settings.reduced_motion = true;
+            app.saved.settings.show_reasoning = false;
+            app.saved.chats[0].messages[1].text = "Live progress".into();
+            let (events, mut steering) = fake_active(&mut app);
+            app.saved.chats[0].messages[1].activities[0].status = ActionStatus::Running;
+            app.saved.chats[0].messages[1].activities[1].status = ActionStatus::Waiting;
+            app.saved.chats[0].draft = "Keep this guidance".into();
+            app.submit(&ctx, true);
+            let accepted = steering.try_recv().unwrap();
+
+            let mut other = Chat::new(app.project().id);
+            other.title = "Chat to delete".into();
+            let other_id = other.id;
+            let user = Message::new(true, "Old request".into(), 0.0, String::new());
+            let removed_message = user.id;
+            app.reveals
+                .insert(user.id, (Reveal::complete(&user.text), Reveal::default()));
+            other.messages.push(user);
+            app.saved.chats.push(other);
+            if select_deleted {
+                app.saved.selected = other_id;
+            }
+            let mut output = draw(
+                &mut app,
+                &ctx,
+                1180.0,
+                820.0,
+                0.0,
+                vec![],
+                egui::Modifiers::NONE,
+            );
+            let pos = text_position(&output.shapes, "Chat to delete");
+            for frame in 1..=3 {
+                output = draw(
+                    &mut app,
+                    &ctx,
+                    1180.0,
+                    820.0,
+                    frame as f64 * 0.2,
+                    if frame < 3 {
+                        vec![
+                            egui::Event::PointerMoved(pos),
+                            pointer_button(pos, egui::PointerButton::Secondary, frame == 1),
+                        ]
+                    } else {
+                        vec![]
+                    },
+                    egui::Modifiers::NONE,
+                );
+            }
+            let pos = text_position(&output.shapes, "Delete chat");
+            let output = click(&mut app, &ctx, pos, 0.8);
+
+            assert!(!app.saved.chats.iter().any(|c| c.id == other_id));
+            assert!(!app.reveals.contains_key(&removed_message));
+            assert_eq!(app.saved.selected, original);
+            let active = app.active.as_ref().unwrap();
+            assert_eq!((active.chat, active.message), (original, reply_id));
+            assert!(!active.task.is_finished());
+            let chat = &app.saved.chats[0];
+            assert_eq!(chat.messages[1].status, Status::Streaming);
+            assert_eq!(chat.messages[1].activities[0].status, ActionStatus::Running);
+            assert_eq!(chat.messages[1].activities[1].status, ActionStatus::Waiting);
+            assert!(!chat.queue_paused);
+            assert_eq!(chat.queue[0].id, accepted.id);
+            assert!(chat.queue[0].dispatched);
+            text_center(&output, "Working");
+            let tool_ids = chat.messages[1].activities[..2]
+                .iter()
+                .map(|a| a.id.clone())
+                .collect::<Vec<_>>();
+
+            // Deletion must not allow an already dispatched steer to be sent twice.
+            app.steer_queued(original, accepted.id, &ctx);
+            assert!(steering.try_recv().is_err());
+            for id in tool_ids {
+                events
+                    .send(Event::ToolFinished {
+                        id,
+                        output: tools::ToolOutput {
+                            text: "Finished after deletion".into(),
+                            status: ActionStatus::Complete,
+                            change: None,
+                            images: Vec::new(),
+                        },
+                        elapsed: 0.2,
+                        show_in_reply: false,
+                    })
+                    .unwrap();
+            }
+            events.send(Event::Steered(vec![accepted])).unwrap();
+            events
+                .send(Event::Text("Continued after deletion".into()))
+                .unwrap();
+            app.poll(&ctx);
+            let chat = &app.saved.chats[0];
+            assert!(chat.queue.is_empty());
+            assert_eq!(chat.messages[1].status, Status::Complete);
+            for activity in &chat.messages[1].activities[..2] {
+                assert_eq!(activity.status, ActionStatus::Complete);
+                assert_eq!(activity.result.as_ref(), "Finished after deletion");
+            }
+            assert_eq!(chat.messages[3].status, Status::Streaming);
+            assert_eq!(chat.messages[3].text, "Continued after deletion");
+            events.send(Event::Completed).unwrap();
+            app.poll(&ctx);
+            assert_eq!(app.saved.chats[0].messages[3].status, Status::Complete);
+            assert!(app.active.is_none());
         }
     }
 

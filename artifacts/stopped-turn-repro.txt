@@ -1,0 +1,21 @@
+   Compiling hfx v0.1.0 (/home/lord/Documents/hfx)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.24s
+     Running unittests src/main.rs (target/debug/deps/hfx-f921778c23924b72)
+
+running 1 test
+
+thread 'app::tests::deleting_another_chat_preserves_the_live_turn_tools_and_steering' (3156635) panicked at src/app.rs:5154:13:
+assertion `left == right` failed
+  left: Cancelled
+ right: Streaming
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test app::tests::deleting_another_chat_preserves_the_live_turn_tools_and_steering ... FAILED
+
+failures:
+
+failures:
+    app::tests::deleting_another_chat_preserves_the_live_turn_tools_and_steering
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 152 filtered out; finished in 0.16s
+
+error: test failed, to rerun pass `--bin hfx`

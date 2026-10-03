@@ -1,0 +1,244 @@
+    Checking hfx v0.1.0 (/home/lord/Documents/hfx)
+error: this `if` statement can be collapsed
+   --> src/backend.rs:641:5
+    |
+641 | /     if settings.provider == Provider::Llama {
+642 | |         if let Ok(url) = endpoint(
+643 | |             settings
+644 | |                 .base_url()
+...   |
+666 | |     }
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+    = note: `-D clippy::collapsible-if` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::collapsible_if)]`
+help: collapse nested if block
+    |
+641 ~     if settings.provider == Provider::Llama
+642 ~         && let Ok(url) = endpoint(
+643 |             settings
+...
+664 |             }
+665 ~         }
+    |
+
+error: this `if` statement can be collapsed
+   --> src/backend.rs:654:13
+    |
+654 | /             if let Ok(response) = http.send().await {
+655 | |                 if response.status().is_success() {
+656 | |                     if let Ok(props) = response.json::<Value>().await {
+657 | |                         if let Some(limit) = model_context_window(&props) {
+...   |
+664 | |             }
+    | |_____________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+654 ~             if let Ok(response) = http.send().await
+655 ~                 && response.status().is_success() {
+656 |                     if let Ok(props) = response.json::<Value>().await {
+...
+662 |                     }
+663 ~                 }
+    |
+
+error: this `if` statement can be collapsed
+   --> src/backend.rs:655:17
+    |
+655 | /                 if response.status().is_success() {
+656 | |                     if let Ok(props) = response.json::<Value>().await {
+657 | |                         if let Some(limit) = model_context_window(&props) {
+658 | |                             for model in &mut models {
+...   |
+663 | |                 }
+    | |_________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+655 ~                 if response.status().is_success()
+656 ~                     && let Ok(props) = response.json::<Value>().await {
+657 |                         if let Some(limit) = model_context_window(&props) {
+...
+661 |                         }
+662 ~                     }
+    |
+
+error: this `if` statement can be collapsed
+   --> src/backend.rs:656:21
+    |
+656 | /                     if let Ok(props) = response.json::<Value>().await {
+657 | |                         if let Some(limit) = model_context_window(&props) {
+658 | |                             for model in &mut models {
+659 | |                                 model.context_window = Some(limit);
+...   |
+662 | |                     }
+    | |_____________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+656 ~                     if let Ok(props) = response.json::<Value>().await
+657 ~                         && let Some(limit) = model_context_window(&props) {
+658 |                             for model in &mut models {
+659 |                                 model.context_window = Some(limit);
+660 |                             }
+661 ~                         }
+    |
+
+error: this `if` statement can be collapsed
+   --> src/codex.rs:354:17
+    |
+354 | /                 if let Some(id) = model["slug"].as_str().or_else(|| model["id"].as_str()) {
+355 | |                     if let Some(limit) = crate::backend::model_context_window(model) {
+356 | |                         self.context_windows
+357 | |                             .lock()
+...   |
+361 | |                 }
+    | |_________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+354 ~                 if let Some(id) = model["slug"].as_str().or_else(|| model["id"].as_str())
+355 ~                     && let Some(limit) = crate::backend::model_context_window(model) {
+356 |                         self.context_windows
+...
+359 |                             .insert(id.to_owned(), limit);
+360 ~                     }
+    |
+
+error: this `if` statement can be collapsed
+   --> src/context.rs:122:9
+    |
+122 | /         if item["type"] == "function_call" {
+123 | |             if let Some(id) = item["call_id"].as_str() {
+124 | |                 pending.insert(id.to_owned());
+125 | |             }
+126 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+122 ~         if item["type"] == "function_call"
+123 ~             && let Some(id) = item["call_id"].as_str() {
+124 |                 pending.insert(id.to_owned());
+125 ~             }
+    |
+
+error: this `if` statement can be collapsed
+   --> src/context.rs:134:9
+    |
+134 | /         if item["type"] == "function_call_output" {
+135 | |             if let Some(id) = item["call_id"].as_str() {
+136 | |                 pending.remove(id);
+137 | |             }
+138 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+134 ~         if item["type"] == "function_call_output"
+135 ~             && let Some(id) = item["call_id"].as_str() {
+136 |                 pending.remove(id);
+137 ~             }
+    |
+
+error: this `if` statement can be collapsed
+   --> src/context.rs:139:9
+    |
+139 | /         if item["role"] == "tool" {
+140 | |             if let Some(id) = item["tool_call_id"].as_str() {
+141 | |                 pending.remove(id);
+142 | |             }
+143 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+139 ~         if item["role"] == "tool"
+140 ~             && let Some(id) = item["tool_call_id"].as_str() {
+141 |                 pending.remove(id);
+142 ~             }
+    |
+
+error: could not compile `hfx` (bin "hfx") due to 8 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: this `if` statement can be collapsed
+    --> src/app.rs:5603:13
+     |
+5603 | /             if let Ok(filter) = std::env::var("HFX_PREVIEW_FILTER") {
+5604 | |                 if !preview.starts_with(&filter) {
+5605 | |                     continue;
+5606 | |                 }
+5607 | |             }
+     | |_____________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+     = note: `-D clippy::collapsible-if` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::collapsible_if)]`
+help: collapse nested if block
+     |
+5603 ~             if let Ok(filter) = std::env::var("HFX_PREVIEW_FILTER")
+5604 ~                 && !preview.starts_with(&filter) {
+5605 |                     continue;
+5606 ~                 }
+     |
+
+error: length comparison to zero
+    --> src/app.rs:6349:17
+     |
+6349 |         assert!(reply.text.len() > 0 && reply.text.len() <= EVENTS_PER_TICK * "🌿".len());
+     |                 ^^^^^^^^^^^^^^^^^^^^ help: using `!is_empty` is clearer and more explicit: `!reply.text.is_empty()`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#len_zero
+     = note: `-D clippy::len-zero` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::len_zero)]`
+
+error: this `if` statement can be collapsed
+   --> src/backend.rs:641:5
+    |
+641 | /     if settings.provider == Provider::Llama {
+642 | |         if let Ok(url) = endpoint(
+643 | |             settings
+644 | |                 .base_url()
+...   |
+666 | |     }
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+help: collapse nested if block
+    |
+641 ~     if settings.provider == Provider::Llama
+642 ~         && let Ok(url) = endpoint(
+643 |             settings
+...
+664 |             }
+665 ~         }
+    |
+
+error: expression can be simplified using `Option::unwrap_or()`
+    --> src/backend.rs:2986:40
+     |
+2986 |                   let (prefix, suffix) = response
+     |  ________________________________________^
+2987 | |                     .split_once("STEER_GATE")
+2988 | |                     .map_or((response.as_str(), ""), |parts| parts);
+     | |___________________________________________________________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#map_or_identity
+     = note: `-D clippy::map-or-identity` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::map_or_identity)]`
+help: consider using `unwrap_or`
+     |
+2988 -                     .map_or((response.as_str(), ""), |parts| parts);
+2988 +                     .unwrap_or((response.as_str(), ""));
+     |
+
+error: could not compile `hfx` (bin "hfx" test) due to 11 previous errors

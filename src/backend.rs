@@ -14,6 +14,8 @@ pub enum Event {
     ReasoningDetails(Vec<Value>),
     ResponsesContext(Vec<Value>),
     Usage(u64),
+    /// Time in provider requests (network and model generation), not tool I/O.
+    ModelTime(f32),
     ContextUsage {
         tokens: u64,
         estimated: bool,
@@ -45,6 +47,28 @@ pub enum Event {
     },
     Completed,
     Error(String),
+}
+
+/// Report provider time on successful turns and errors. Cancellation drops the
+/// guard too; the UI may already have detached a stopped task's event channel.
+struct ModelTimer {
+    tx: Sender<Event>,
+    started: std::time::Instant,
+}
+impl ModelTimer {
+    fn new(tx: &Sender<Event>) -> Self {
+        Self {
+            tx: tx.clone(),
+            started: std::time::Instant::now(),
+        }
+    }
+}
+impl Drop for ModelTimer {
+    fn drop(&mut self) {
+        let _ = self
+            .tx
+            .send(Event::ModelTime(self.started.elapsed().as_secs_f32()));
+    }
 }
 
 pub struct Request {
@@ -359,10 +383,10 @@ fn parse_event(
                             item["arguments"] = json!(arguments);
                         }
                     } else if let Some(delta) = value["delta"].as_str() {
-                        item["arguments"] = json!(format!(
-                            "{}{delta}",
-                            item["arguments"].as_str().unwrap_or("")
-                        ));
+                        match &mut item["arguments"] {
+                            Value::String(arguments) => arguments.push_str(delta),
+                            arguments => *arguments = json!(delta),
+                        }
                     }
                 }
             }
@@ -417,6 +441,27 @@ fn parse_event(
             turn.input_tokens = Some(tokens);
         }
         let choice = &value["choices"][0];
+        if turn.terminal {
+            let extra_output = choice
+                .get("delta")
+                .or_else(|| choice.get("message"))
+                .and_then(Value::as_object)
+                .is_some_and(|fields| {
+                    fields.values().any(|v| match v {
+                        Value::Null => false,
+                        Value::String(s) => !s.is_empty(),
+                        Value::Array(v) => !v.is_empty(),
+                        _ => true,
+                    })
+                });
+            let unsuccessful = choice["finish_reason"]
+                .as_str()
+                .is_some_and(|r| !matches!(r, "stop" | "tool_calls" | "function_call"));
+            if extra_output || unsuccessful {
+                return Err("Provider sent output or an unsuccessful status after the completed turn; tools were not executed.".into());
+            }
+            return Ok(()); // Optional trailing usage only, never more tool arguments.
+        }
         let delta = &choice[if choice.get("delta").is_some() {
             "delta"
         } else {
@@ -450,9 +495,11 @@ fn parse_event(
                 if let Some(fields) = detail.as_object() {
                     for (key, value) in fields {
                         if matches!(key.as_str(), "text" | "summary" | "data") {
-                            let prior = accumulated[key].as_str().unwrap_or("");
-                            accumulated[key] =
-                                json!(format!("{prior}{}", value.as_str().unwrap_or("")));
+                            let delta = value.as_str().unwrap_or("");
+                            match &mut accumulated[key] {
+                                Value::String(text) => text.push_str(delta),
+                                text => *text = json!(delta),
+                            }
                         } else {
                             accumulated[key] = value.clone();
                         }
@@ -490,7 +537,12 @@ fn parse_event(
         if choice["finish_reason"] == "length" {
             return Err("The model reached its output limit. Increase the limit in settings, or continue the conversation.".into());
         }
-        if choice["finish_reason"].is_string() {
+        if let Some(reason) = choice["finish_reason"].as_str() {
+            if !matches!(reason, "stop" | "tool_calls" | "function_call") {
+                return Err(format!(
+                    "The provider stopped the response with {reason}; incomplete tool calls were not executed."
+                ));
+            }
             turn.terminal = true;
         }
     }
@@ -664,7 +716,7 @@ fn accept_steering(
         .map_err(|_| "Window closed")?;
     for message in &messages {
         let items = history_items(message, settings.provider);
-        let growth = context::estimate(&json!(items));
+        let growth = context::estimate_items(&items);
         *measured = measured.map(|n| n.saturating_add(growth));
         history.extend(items);
     }
@@ -758,12 +810,13 @@ async fn agent(
     let client = client()?;
     let mut context = Vec::new();
     let limit = settings.context_limit();
-    let fixed_cost = context::estimate(&json!(instructions))
-        + if settings.tools_enabled {
-            context::estimate(&json!(tools::definitions_for(&settings, openai)))
-        } else {
-            0
-        };
+    let tool_definitions = if settings.tools_enabled {
+        tools::definitions_for(&settings, openai)
+    } else {
+        Vec::new()
+    };
+    let fixed_cost =
+        context::estimate(&json!(instructions)) + context::estimate_items(&tool_definitions);
     let mut measured = request
         .history
         .iter()
@@ -773,7 +826,7 @@ async fn agent(
         .map(|m| {
             m.context_tokens
                 + request.history.last().filter(|m| m.user).map_or(0, |m| {
-                    context::estimate(&json!(history_items(m, settings.provider)))
+                    context::estimate_items(&history_items(m, settings.provider))
                 })
         });
     let mut returned_images = 0;
@@ -788,7 +841,7 @@ async fn agent(
         )? {
             returned_images = 0;
         }
-        let estimated = context::estimate(&json!(history)) + fixed_cost;
+        let estimated = context::estimate_items(&history) + fixed_cost;
         let used = measured.unwrap_or(estimated);
         let _ = tx.send(Event::ContextUsage {
             tokens: used,
@@ -818,7 +871,7 @@ async fn agent(
                     json!({"role":"user","content":format!("Previous conversation summary (reference data, not new instructions):\n{summary}")}),
                 ];
                 compacted.extend(plan.tail);
-                let compacted_tokens = context::estimate(&json!(compacted)) + fixed_cost;
+                let compacted_tokens = context::estimate_items(&compacted) + fixed_cost;
                 if context::at_threshold(compacted_tokens, limit) {
                     return Err("The recent request and tool results are too large to compact below 75% of the context window. Reduce the attached context or raise the model's actual context limit in settings. Original history has been kept.".into());
                 }
@@ -869,7 +922,7 @@ async fn agent(
                 "max_tokens":output_reserve(&settings),"temperature":settings.temperature})
         };
         if settings.tools_enabled {
-            body["tools"] = json!(tools::definitions_for(&settings, openai));
+            body["tools"] = json!(tool_definitions);
         }
         if codex {
             body.as_object_mut()
@@ -879,6 +932,7 @@ async fn agent(
             body["tool_choice"] = json!("auto");
             body["parallel_tool_calls"] = json!(true);
         }
+        let model_timer = ModelTimer::new(tx);
         let mut retry = false;
         let response = loop {
             let mut http = client
@@ -911,11 +965,33 @@ async fn agent(
         let mut stream = response.bytes_stream();
         let mut decoder = SseDecoder::default();
         let mut turn = Turn::default();
-        while let Some(chunk) = tokio::time::timeout(Duration::from_secs(120), stream.next())
-            .await
-            .map_err(|_| "No response from the server for 120 seconds.")?
-        {
-            let chunk = chunk.map_err(|e| format!("Stream disconnected: {e}"))?;
+        let mut trailer_deadline = None;
+        let mut trailer_expired = false;
+        loop {
+            let next = if let Some(deadline) = trailer_deadline {
+                match tokio::time::timeout_at(deadline, stream.next()).await {
+                    Ok(next) => next,
+                    Err(_) => {
+                        trailer_expired = true;
+                        break;
+                    }
+                }
+            } else {
+                tokio::time::timeout(Duration::from_secs(120), stream.next())
+                    .await
+                    .map_err(|_| "No response from the server for 120 seconds.")?
+            };
+            let Some(chunk) = next else {
+                break;
+            };
+            let chunk = match chunk {
+                Ok(chunk) => chunk,
+                Err(_) if turn.terminal => {
+                    trailer_expired = true;
+                    break;
+                }
+                Err(error) => return Err(format!("Stream disconnected: {error}")),
+            };
             let mut done = false;
             for event in decoder.push(&chunk)? {
                 done |= event.trim() == "[DONE]";
@@ -924,9 +1000,14 @@ async fn agent(
             if done || (openai && turn.terminal) {
                 break;
             }
+            if turn.terminal && trailer_deadline.is_none() {
+                trailer_deadline = Some(tokio::time::Instant::now() + Duration::from_millis(100));
+            }
         }
-        for event in decoder.finish()? {
-            parse_event(settings.provider, &event, &mut turn, tx)?;
+        if !trailer_expired {
+            for event in decoder.finish()? {
+                parse_event(settings.provider, &event, &mut turn, tx)?;
+            }
         }
         if !turn.terminal {
             return Err(
@@ -934,6 +1015,7 @@ async fn agent(
                     .into(),
             );
         }
+        drop(model_timer);
         for source in std::mem::take(&mut turn.images) {
             if returned_images >= attachments::MAX_ATTACHMENTS {
                 return Err("A reply can contain at most 8 images.".into());
@@ -950,7 +1032,7 @@ async fn agent(
         measured = turn
             .input_tokens
             .map(|n| n.saturating_add(turn.output_tokens));
-        let request_estimate = context::estimate(&json!(history));
+        let request_estimate = context::estimate_items(&history);
         if openai {
             // Gateways may send text deltas but omit/empty the terminal message.
             // Steering continues in this same loop, so reconstruct it now rather
@@ -974,7 +1056,7 @@ async fn agent(
             let tokens = measured.unwrap_or_else(|| {
                 request_estimate
                     + fixed_cost
-                    + context::estimate(&json!(context))
+                    + context::estimate_items(&context)
                     + context::estimate(&json!(turn.text))
             });
             let _ = tx.send(Event::ContextUsage {
@@ -1027,93 +1109,63 @@ async fn agent(
             context.push(assistant.clone());
             history.push(assistant);
         }
-        let tool_start_estimate = context::estimate(&json!(history));
+        let tool_start_estimate = context::estimate_items(&history);
         let mut image_context = Vec::new();
-        for call in turn.calls.into_values() {
-            if call.id.is_empty() {
-                return Err("The server returned a tool call without an ID.".into());
+        if turn.calls.values().any(|call| call.id.is_empty()) {
+            return Err("The server returned a tool call without an ID.".into());
+        }
+        let mut remaining_reads = turn
+            .calls
+            .values()
+            .filter(|call| call.name == "read_file")
+            .count();
+        let mut calls = turn.calls.into_values().peekable();
+        while let Some(call) = calls.next() {
+            let mut batch = vec![call];
+            if !settings.review_actions && parallel_read(&batch[0]) {
+                while batch.len() < 4 && calls.peek().is_some_and(parallel_read) {
+                    batch.push(calls.next().expect("peeked read"));
+                }
             }
-            let _ = tx.send(Event::ToolStarted(call.clone()));
-            let approved = if call.needs_approval(settings.review_actions) {
-                let (reply, receive) = oneshot::channel();
-                tx.send(Event::Approval {
-                    call: call.clone(),
-                    reply,
-                    command_mode: settings.command_mode,
-                })
-                .map_err(|_| "Window closed")?;
-                receive.await.unwrap_or(false)
-            } else {
-                true
-            };
-            let started = std::time::Instant::now();
-            let output = if !approved {
-                tools::ToolOutput { text: "The user declined this action. Do not retry the same action without new instructions.".into(), status: ActionStatus::Declined, change: None, images:Vec::new() }
-            } else if call.name == "send_image" && returned_images >= attachments::MAX_ATTACHMENTS {
-                tools::ToolOutput {
-                    text: "A reply can contain at most 8 images.".into(),
-                    status: ActionStatus::Failed,
-                    change: None,
-                    images: Vec::new(),
-                }
-            } else if call.name == "ask_user" {
-                match tools::Question::parse(&call.arguments) {
-                    Ok(question) => {
-                        let (reply, receive) = oneshot::channel();
-                        let deadline = std::time::Instant::now() + Duration::from_secs(30);
-                        tx.send(Event::AskUser {
-                            id: call.id.clone(),
-                            question: question.clone(),
-                            deadline,
-                            reply,
-                        })
-                        .map_err(|_| "Window closed")?;
-                        tools::ToolOutput::complete(wait_answer(question, receive, deadline).await)
-                    }
-                    Err(error) => tools::ToolOutput {
-                        text: error,
-                        status: ActionStatus::Failed,
-                        change: None,
-                        images: Vec::new(),
-                    },
-                }
-            } else {
-                let _ = tx.send(Event::ToolRunning(call.id.clone()));
-                match tools::execute_with_settings(
-                    request.workspace.clone(),
-                    call.clone(),
-                    &settings,
+            // Reserve space for the next answer and page metadata, and share
+            // the available context across all file reads in this turn.
+            let used = (context::estimate_items(&history) + fixed_cost).max(measured.unwrap_or(0));
+            let available = limit.saturating_sub(
+                used.saturating_add(output_reserve(&settings))
+                    .saturating_add(512u64.saturating_mul(remaining_reads as u64)),
+            );
+            let read_budget = crate::file_read::default_budget(&settings)
+                .min(
+                    usize::try_from(available.saturating_mul(3) / remaining_reads.max(1) as u64)
+                        .unwrap_or(usize::MAX),
                 )
-                .await
-                {
-                    Ok(result) => result,
-                    Err(error) => tools::ToolOutput {
-                        text: format!("Tool failed: {error}"),
-                        status: ActionStatus::Failed,
-                        change: None,
-                        images: Vec::new(),
-                    },
+                .max(4);
+            remaining_reads -= batch.iter().filter(|call| call.name == "read_file").count();
+            let allow_sent_image = returned_images < attachments::MAX_ATTACHMENTS;
+            let mut results = futures_util::stream::iter(batch.into_iter().map(|call| {
+                execute_call(
+                    &request.workspace,
+                    call,
+                    &settings,
+                    tx,
+                    openai,
+                    read_budget,
+                    allow_sent_image,
+                )
+            }))
+            .buffered(4);
+            while let Some(result) = results.next().await {
+                let (mut items, sent_images) = result?;
+                returned_images += sent_images;
+                if openai {
+                    history.extend(items.clone());
+                    context.extend(items);
+                } else {
+                    let result = items.remove(0);
+                    context.push(result.clone());
+                    history.push(result);
+                    image_context.extend(items);
                 }
-            };
-            let show_in_reply = call.name == "send_image";
-            if show_in_reply {
-                returned_images += output.images.len();
-            }
-            let mut items = tool_result_items(&call.id, &output, openai);
-            let _ = tx.send(Event::ToolFinished {
-                id: call.id.clone(),
-                output,
-                elapsed: started.elapsed().as_secs_f32(),
-                show_in_reply,
-            });
-            if openai {
-                history.extend(items.clone());
-                context.extend(items);
-            } else {
-                let result = items.remove(0);
-                context.push(result.clone());
-                history.push(result);
-                image_context.extend(items);
             }
         }
         // All tool IDs must be answered before inserting multimodal user context.
@@ -1121,12 +1173,109 @@ async fn agent(
         history.extend(image_context);
         // Keep completed tool rounds even if a later request fails or is stopped.
         let _ = tx.send(Event::ResponsesContext(context.clone()));
-        let growth = context::estimate(&json!(history)).saturating_sub(tool_start_estimate);
+        let growth = context::estimate_items(&history).saturating_sub(tool_start_estimate);
         measured = measured.map(|n| n.saturating_add(growth));
         if !turn.text.is_empty() {
             let _ = tx.send(Event::Text("\n\n".into()));
         }
     }
+}
+
+/// Only contiguous, independent read-only calls may overlap. Commands, edits,
+/// questions, image sends, and all reviewed calls remain ordered barriers.
+fn parallel_read(call: &ToolCall) -> bool {
+    matches!(
+        call.name.as_str(),
+        "read_file" | "list_files" | "web_fetch" | "web_search"
+    )
+}
+
+async fn execute_call(
+    root: &std::path::Path,
+    call: ToolCall,
+    settings: &Settings,
+    tx: &Sender<Event>,
+    openai: bool,
+    read_budget: usize,
+    allow_sent_image: bool,
+) -> Result<(Vec<Value>, usize), String> {
+    let _ = tx.send(Event::ToolStarted(call.clone()));
+    let approved = if call.needs_approval(settings.review_actions) {
+        let (reply, receive) = oneshot::channel();
+        tx.send(Event::Approval {
+            call: call.clone(),
+            reply,
+            command_mode: settings.command_mode,
+        })
+        .map_err(|_| "Window closed")?;
+        receive.await.unwrap_or(false)
+    } else {
+        true
+    };
+    let started = std::time::Instant::now();
+    let output = if !approved {
+        tools::ToolOutput { text: "The user declined this action. Do not retry the same action without new instructions.".into(), status: ActionStatus::Declined, change: None, images:Vec::new() }
+    } else if call.name == "send_image" && !allow_sent_image {
+        tools::ToolOutput {
+            text: "A reply can contain at most 8 images.".into(),
+            status: ActionStatus::Failed,
+            change: None,
+            images: Vec::new(),
+        }
+    } else if call.name == "ask_user" {
+        match tools::Question::parse(&call.arguments) {
+            Ok(question) => {
+                let (reply, receive) = oneshot::channel();
+                let deadline = std::time::Instant::now() + Duration::from_secs(30);
+                tx.send(Event::AskUser {
+                    id: call.id.clone(),
+                    question: question.clone(),
+                    deadline,
+                    reply,
+                })
+                .map_err(|_| "Window closed")?;
+                tools::ToolOutput::complete(wait_answer(question, receive, deadline).await)
+            }
+            Err(error) => tools::ToolOutput {
+                text: error,
+                status: ActionStatus::Failed,
+                change: None,
+                images: Vec::new(),
+            },
+        }
+    } else {
+        let _ = tx.send(Event::ToolRunning(call.id.clone()));
+        match tools::execute_with_read_budget(
+            root.to_path_buf(),
+            call.clone(),
+            settings,
+            read_budget,
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(error) => tools::ToolOutput {
+                text: format!("Tool failed: {error}"),
+                status: ActionStatus::Failed,
+                change: None,
+                images: Vec::new(),
+            },
+        }
+    };
+    let show_in_reply = call.name == "send_image";
+    let returned_images = if show_in_reply {
+        output.images.len()
+    } else {
+        0
+    };
+    let items = tool_result_items(&call.id, &output, openai);
+    let _ = tx.send(Event::ToolFinished {
+        id: call.id.clone(),
+        output,
+        elapsed: started.elapsed().as_secs_f32(),
+        show_in_reply,
+    });
+    Ok((items, returned_images))
 }
 
 fn output_reserve(settings: &Settings) -> u64 {
@@ -2849,7 +2998,9 @@ mod tests {
                         .recv_timeout(Duration::from_secs(5))
                         .unwrap();
                     for part in suffix.as_bytes().chunks(3) {
-                        socket.write_all(part).unwrap();
+                        if socket.write_all(part).is_err() {
+                            break;
+                        }
                     }
                 }
             }
@@ -3662,5 +3813,417 @@ mod tests {
             )
             .is_ok()
         );
+    }
+    fn fixture_tool_stream(provider: Provider, calls: Vec<(&str, Value)>) -> String {
+        if matches!(provider, Provider::OpenAI | Provider::Codex) {
+            let output: Vec<Value> = calls.into_iter().enumerate().map(|(i,(name,args))|
+                json!({"type":"function_call","call_id":format!("call-{i}"),"name":name,"arguments":args.to_string()})).collect();
+            sse(&[json!({"type":"response.completed","response":{"output":output}})])
+        } else {
+            let tool_calls: Vec<Value> = calls.into_iter().enumerate().map(|(i,(name,args))|
+                json!({"index":i,"id":format!("call-{i}"),"type":"function","function":{"name":name,"arguments":args.to_string()}})).collect();
+            sse(&[
+                json!({"choices":[{"delta":{"tool_calls":tool_calls},"finish_reason":"tool_calls"}]}),
+            ])
+        }
+    }
+
+    fn fixture_final_stream(provider: Provider) -> String {
+        if matches!(provider, Provider::OpenAI | Provider::Codex) {
+            sse(&[
+                json!({"type":"response.output_text.delta","delta":"Done."}),
+                json!({"type":"response.completed","response":{"output":[]}}),
+            ])
+        } else {
+            sse(&[json!({"choices":[{"delta":{"content":"Done."},"finish_reason":"stop"}]})])
+                + "data: [DONE]\n\n"
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn large_file_pages_and_read_write_barriers_work_on_every_adapter() {
+        for provider in [
+            Provider::Codex,
+            Provider::OpenAI,
+            Provider::OpenRouter,
+            Provider::Llama,
+        ] {
+            let (url, requests, server) = mock_server(vec![
+                fixture_tool_stream(
+                    provider,
+                    vec![
+                        (
+                            "read_file",
+                            json!({"path":"large.rs","offset":null,"max_bytes":null}),
+                        ),
+                        ("read_file", json!({"path":"marker.txt"})),
+                        ("write_file", json!({"path":"marker.txt","content":"after"})),
+                        (
+                            "read_file",
+                            json!({"path":"marker.txt","offset":null,"max_bytes":null}),
+                        ),
+                    ],
+                ),
+                fixture_final_stream(provider),
+            ]);
+            let root = tempfile::tempdir().unwrap();
+            std::fs::write(root.path().join("large.rs"), "x".repeat(300000)).unwrap();
+            std::fs::write(root.path().join("marker.txt"), "before").unwrap();
+            let settings = Settings {
+                provider,
+                openai_key: "fixture".into(),
+                openrouter_key: "fixture".into(),
+                openai_url: url.clone(),
+                openrouter_url: url.clone(),
+                llama_url: url.clone(),
+                review_actions: provider == Provider::OpenAI,
+                ..Default::default()
+            };
+            let (tx, rx) = std::sync::mpsc::channel();
+            let task = tokio::spawn(run(
+                Request {
+                    settings,
+                    workspace: root.path().into(),
+                    history: vec![Message::new(
+                        true,
+                        "Inspect and edit".into(),
+                        0.0,
+                        String::new(),
+                    )],
+                    session: "fixture".into(),
+                    codex_auth: (provider == Provider::Codex)
+                        .then(|| crate::codex::Auth::fixture(url)),
+                },
+                tx,
+            ));
+            let mut results = BTreeMap::new();
+            let mut approvals = Vec::new();
+            loop {
+                match rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+                    Event::ToolFinished { id, output, .. } => {
+                        assert_eq!(output.status, ActionStatus::Complete);
+                        results.insert(id, output.text);
+                    }
+                    Event::Approval { call, reply, .. } => {
+                        approvals.push(call.id);
+                        reply.send(true).unwrap();
+                    }
+                    Event::Completed => break,
+                    Event::Error(error) => panic!("{provider:?}: {error}"),
+                    _ => {}
+                }
+            }
+            task.await.unwrap();
+            server.join().unwrap();
+            assert_eq!(results["call-1"], "before");
+            assert_eq!(results["call-3"], "after");
+            let page = &results["call-0"];
+            assert!(page.contains("successful partial read"));
+            assert!(page.contains("next_offset"));
+            assert!(!page.contains("Tool failed"));
+            let initial = requests.recv().unwrap();
+            let tool = initial["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| {
+                    if provider == Provider::OpenAI || provider == Provider::Codex {
+                        v
+                    } else {
+                        &v["function"]
+                    }
+                })
+                .find(|v| v["name"] == "read_file")
+                .unwrap();
+            assert_eq!(tool["parameters"]["required"].as_array().unwrap().len(), 3);
+            assert_eq!(
+                tool["parameters"]["properties"]["offset"]["type"],
+                json!(["integer", "null"])
+            );
+            let followup = requests.recv().unwrap();
+            let responses = matches!(provider, Provider::Codex | Provider::OpenAI);
+            let items = followup[if responses { "input" } else { "messages" }]
+                .as_array()
+                .unwrap();
+            let ids: Vec<&str> = items
+                .iter()
+                .filter_map(|v| {
+                    if responses {
+                        v["call_id"]
+                            .as_str()
+                            .filter(|_| v["type"] == "function_call_output")
+                    } else {
+                        v["tool_call_id"].as_str()
+                    }
+                })
+                .collect();
+            assert_eq!(ids, vec!["call-0", "call-1", "call-2", "call-3"]);
+            if provider == Provider::OpenAI {
+                assert_eq!(approvals, ids);
+            } else {
+                assert!(approvals.is_empty());
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn completed_chat_tool_turn_does_not_wait_for_delayed_done_and_keeps_usage() {
+        for provider in [Provider::Llama, Provider::OpenRouter] {
+            let first = fixture_tool_stream(
+                provider,
+                vec![(
+                    "write_file",
+                    json!({"path":"ready.txt","content":"authorized"}),
+                )],
+            ) + &sse(&[
+                json!({"choices":[],"usage":{"prompt_tokens":500,"completion_tokens":20}}),
+            ]) + "STEER_GATEdata: [DONE]\n\n";
+            let (release, gate) = std::sync::mpsc::channel();
+            let (url, requests, server) =
+                mock_server_gated(vec![first, fixture_final_stream(provider)], Some(gate));
+            let root = tempfile::tempdir().unwrap();
+            let settings = Settings {
+                provider,
+                openrouter_key: "fixture".into(),
+                llama_url: url.clone(),
+                openrouter_url: url,
+                ..Default::default()
+            };
+            let (tx, rx) = std::sync::mpsc::channel();
+            let task = tokio::spawn(run(
+                Request {
+                    settings,
+                    workspace: root.path().into(),
+                    history: vec![Message::new(
+                        true,
+                        "Write the marker".into(),
+                        0.0,
+                        String::new(),
+                    )],
+                    session: "fixture".into(),
+                    codex_auth: None,
+                },
+                tx,
+            ));
+            let started = std::time::Instant::now();
+            let mut release = Some(release);
+            let mut usage = 0;
+            loop {
+                match rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+                    Event::Usage(n) => usage += n,
+                    Event::ToolFinished { output, .. } => {
+                        assert_eq!(output.status, ActionStatus::Complete);
+                        println!(
+                            "{provider:?}: completed tool while DONE was withheld after {:.2}ms",
+                            started.elapsed().as_secs_f64() * 1000.0
+                        );
+                        release.take().unwrap().send(()).unwrap();
+                    }
+                    Event::Completed => break,
+                    Event::Error(error) => panic!("{error}"),
+                    _ => {}
+                }
+            }
+            task.await.unwrap();
+            server.join().unwrap();
+            assert_eq!(usage, 20);
+            assert_eq!(
+                std::fs::read_to_string(root.path().join("ready.txt")).unwrap(),
+                "authorized"
+            );
+            assert!(release.is_none());
+            assert_eq!(requests.try_iter().count(), 2);
+        }
+    }
+
+    #[test]
+    fn filtered_chat_tool_turn_is_not_authorized() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut turn = Turn::default();
+        let event = json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"bad","function":{"name":"write_file","arguments":"{}"}}]},"finish_reason":"content_filter"}]});
+        assert!(parse_event(Provider::Llama, &event.to_string(), &mut turn, &tx).is_err());
+        assert!(!turn.terminal);
+    }
+    fn delayed_web_fixture(
+        count: usize,
+    ) -> (
+        String,
+        std::thread::JoinHandle<()>,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        use std::{
+            io::{Read, Write},
+            sync::{
+                Arc,
+                atomic::{AtomicUsize, Ordering},
+            },
+        };
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let observed = peak.clone();
+        let server = std::thread::spawn(move || {
+            let mut workers = Vec::new();
+            for _ in 0..count {
+                let (mut socket, _) = listener.accept().unwrap();
+                let active = active.clone();
+                let peak = peak.clone();
+                workers.push(std::thread::spawn(move||{
+                    socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                    let mut request=Vec::new();while !request.ends_with(b"\r\n\r\n") {let mut b=[0];socket.read_exact(&mut b).unwrap();request.push(b[0]);}
+                    let n=active.fetch_add(1,Ordering::SeqCst)+1;peak.fetch_max(n,Ordering::SeqCst);
+                    std::thread::sleep(Duration::from_millis(80));
+                    socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 13\r\nConnection: close\r\n\r\nVerified docs").unwrap();
+                    active.fetch_sub(1,Ordering::SeqCst);
+                }));
+            }
+            for worker in workers {
+                worker.join().unwrap();
+            }
+        });
+        (url, server, observed)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn read_only_network_batch_overlaps_but_wire_results_remain_ordered() {
+        let (web, web_server, peak) = delayed_web_fixture(4);
+        let calls = (0..4)
+            .map(|i| ("web_fetch", json!({"url":format!("{web}/{i}")})))
+            .collect();
+        let provider = Provider::OpenAI;
+        let (url, requests, server) = mock_server(vec![
+            fixture_tool_stream(provider, calls),
+            fixture_final_stream(provider),
+        ]);
+        let root = tempfile::tempdir().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let task = tokio::spawn(run(
+            Request {
+                settings: Settings {
+                    provider,
+                    openai_url: url,
+                    openai_key: "fixture".into(),
+                    ..Default::default()
+                },
+                workspace: root.path().into(),
+                history: vec![Message::new(
+                    true,
+                    "Read the docs".into(),
+                    0.0,
+                    String::new(),
+                )],
+                session: "fixture".into(),
+                codex_auth: None,
+            },
+            tx,
+        ));
+        let mut count = 0;
+        loop {
+            match rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+                Event::ToolFinished { output, .. } => {
+                    assert_eq!(output.status, ActionStatus::Complete);
+                    count += 1;
+                }
+                Event::Completed => break,
+                Event::Error(error) => panic!("{error}"),
+                _ => {}
+            }
+        }
+        task.await.unwrap();
+        server.join().unwrap();
+        web_server.join().unwrap();
+        assert_eq!(count, 4);
+        assert!(peak.load(std::sync::atomic::Ordering::SeqCst) >= 2);
+        requests.recv().unwrap();
+        let followup = requests.recv().unwrap();
+        let ids: Vec<&str> = followup["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|v| v["type"] == "function_call_output")
+            .map(|v| v["call_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["call-0", "call-1", "call-2", "call-3"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "manual controlled tool I/O latency measurement"]
+    async fn profile_independent_tool_io() {
+        let root = tempfile::tempdir().unwrap();
+        let settings = Settings::default();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        std::fs::write(root.path().join("sample.rs"), "source line\n".repeat(8000)).unwrap();
+        let started = std::time::Instant::now();
+        for i in 0..100 {
+            execute_call(
+                root.path(),
+                ToolCall {
+                    id: i.to_string(),
+                    name: "read_file".into(),
+                    arguments: json!({"path":"sample.rs"}).to_string(),
+                },
+                &settings,
+                &tx,
+                true,
+                192000,
+                true,
+            )
+            .await
+            .unwrap();
+        }
+        println!(
+            "96 kB local file read: {:.3} ms/call (100 calls, includes tool events)",
+            started.elapsed().as_secs_f64() * 10.0
+        );
+        let (url, server, _peak) = delayed_web_fixture(8);
+        for concurrent in [false, true] {
+            let calls: Vec<_> = (0..4)
+                .map(|i| ToolCall {
+                    id: i.to_string(),
+                    name: "web_fetch".into(),
+                    arguments: json!({"url":format!("{url}/{i}")}).to_string(),
+                })
+                .collect();
+            let started = std::time::Instant::now();
+            let mut results =
+                futures_util::stream::iter(calls.into_iter().map(|call| {
+                    execute_call(root.path(), call, &settings, &tx, true, 192000, true)
+                }))
+                .buffered(if concurrent { 4 } else { 1 });
+            while let Some(result) = results.next().await {
+                result.unwrap();
+            }
+            println!(
+                "4 independent HTTP reads concurrent={concurrent}: {:.2} ms (80ms simulated service latency each)",
+                started.elapsed().as_secs_f64() * 1000.0
+            );
+        }
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn terminal_chat_trailers_cannot_append_tool_arguments() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut turn = Turn::default();
+        parse_event(
+            Provider::Llama,
+            fixture_tool_stream(Provider::Llama, vec![])
+                .trim_start_matches("data: ")
+                .trim(),
+            &mut turn,
+            &tx,
+        )
+        .unwrap();
+        let extra = json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"late","function":{"name":"write_file","arguments":"{}"}}]},"finish_reason":null}]});
+        assert!(parse_event(Provider::Llama, &extra.to_string(), &mut turn, &tx).is_err());
+        assert!(turn.calls.is_empty());
+    }
+    #[test]
+    fn model_timing_is_reported_when_a_request_scope_exits_early() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let guard = ModelTimer::new(&tx);
+        drop(guard);
+        assert!(matches!(rx.recv().unwrap(),Event::ModelTime(seconds) if seconds>=0.0));
     }
 }

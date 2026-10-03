@@ -1,0 +1,10 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.21s
+     Running unittests src/main.rs (target/debug/deps/hfx-f921778c23924b72)
+
+running 3 tests
+test context::tests::cuts_never_split_tool_pairs_and_preserve_latest_request_and_image ... ok
+test context::tests::threshold_and_images_are_budgeted_without_base64_inflation ... ok
+test context::tests::checkpoint_roundtrip_keeps_ui_history_but_does_not_replay_old_actions ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 140 filtered out; finished in 0.00s
+

@@ -1,0 +1,11 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.16s
+     Running unittests src/main.rs (target/debug/deps/hfx-f921778c23924b72)
+
+running 1 test
+96 kB local file read: 0.113 ms/call (100 calls, includes tool events)
+4 independent HTTP reads concurrent=false: 330.08 ms (80ms simulated service latency each)
+4 independent HTTP reads concurrent=true: 86.08 ms (80ms simulated service latency each)
+test backend::tests::profile_independent_tool_io ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 151 filtered out; finished in 0.43s
+
