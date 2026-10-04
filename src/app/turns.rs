@@ -109,6 +109,7 @@ impl Harness {
             self.trust_request = Some(TrustRequest {
                 project,
                 chat: Some(chat_id),
+                workspace: Ok(workspace),
             });
             self.store.queue(&self.saved);
             return false;
@@ -557,6 +558,8 @@ impl Harness {
             ctx.request_repaint_after(interval);
         }
         self.mcp_probe.poll(ctx, interval);
+        let git_root = PathBuf::from(&self.project().path);
+        self.git_probe.update(ctx, &self.runtime, git_root);
         if let Some(rx) = &self.probe_rx {
             if let Ok(result) = rx.try_recv() {
                 self.probe_result = Some(result);

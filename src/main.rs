@@ -5,7 +5,9 @@ mod codex;
 mod commands;
 mod context;
 mod file_edit;
+mod file_metadata;
 mod file_read;
+mod git_status;
 mod lifecycle;
 #[cfg(target_os = "linux")]
 mod linux_desktop;

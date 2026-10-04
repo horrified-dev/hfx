@@ -96,10 +96,7 @@ impl Harness {
                     self.revoke_project_trust(project);
                 }
             } else if ui.button("Review project trust").clicked() {
-                self.trust_request = Some(TrustRequest {
-                    project,
-                    chat: None,
-                });
+                self.trust_request = Some(TrustRequest::for_project(self.project(), None));
             }
         });
     }
@@ -132,7 +129,7 @@ impl Harness {
             .iter_mut()
             .find(|p| p.id == request.project)
             .ok_or("Project no longer exists")?;
-        project.trust()?;
+        project.trust_workspace(request.workspace.as_ref().map_err(Clone::clone)?)?;
         self.resume_after_trust(ctx);
         Ok(())
     }
@@ -222,13 +219,17 @@ impl Harness {
                     if ui
                         .add(
                             egui::Button::new(
-                                RichText::new("Continue without saving")
+                                RichText::new(if busy { "Hide recovery progress" } else { "Continue without saving" })
                                     .size(12.0)
                                     .color(theme::MUTED),
                             )
                             .frame(false),
                         )
-                        .on_hover_text("Keep using this temporary session. Saving stays disabled.")
+                        .on_hover_text(if busy {
+                            "Hide this dialog without cancelling recovery. Saving is enabled only if the recovery you requested succeeds."
+                        } else {
+                            "Keep using this temporary session. Saving stays disabled."
+                        })
                         .clicked()
                     {
                         self.recovery_open = false;
@@ -267,6 +268,13 @@ impl Harness {
                 self.trust_request = None;
                 return;
             };
+            let trust_error = match &request.workspace {
+                Ok(expected) if expected.to_str().is_none() => Some("Project directory is not valid UTF-8; trust was not granted.".to_owned()),
+                Ok(expected) => project.workspace().and_then(|current| {
+                    if current == *expected { Ok(()) } else { Err("Project directory changed. Close this dialog and review the new directory before granting trust.".to_owned()) }
+                }).err(),
+                Err(error) => Some(error.clone()),
+            };
             let mut action = None;
             let modal = safety_modal(ctx, "project_trust").show(ctx, |ui| {
                 safety_style(ui, ctx);
@@ -292,7 +300,7 @@ impl Harness {
                                         .wrap(),
                                 );
                             });
-                            if let Ok(canonical) = project.workspace() {
+                            if let Ok(canonical) = &request.workspace {
                                 safety_caption(ui, "CANONICAL PROJECT DIRECTORY");
                                 safety_path(ui, &canonical.display().to_string());
                                 if canonical.as_path() != std::path::Path::new(&project.path) {
@@ -303,6 +311,10 @@ impl Harness {
                                 safety_path(ui, &project.path);
                             }
                         });
+                        if let Some(error) = &trust_error {
+                            ui.add_space(10.0);
+                            safety_notice(ui, "TRUST NOT GRANTED", error);
+                        }
                         ui.add_space(10.0);
                         safety_notice(
                             ui,
@@ -349,7 +361,9 @@ impl Harness {
                     vec2(ui.available_width(), 36.0),
                     Layout::right_to_left(Align::Center).with_main_wrap(true),
                     |ui| {
-                        if theme::dialog_action(ui, "Trust project and continue", true).clicked() {
+                        if ui.add_enabled_ui(trust_error.is_none(), |ui| {
+                            theme::dialog_action(ui, "Trust project and continue", true)
+                        }).inner.clicked() {
                             action = Some(1);
                         }
                         if theme::dialog_action(ui, "Cancel", false).clicked() {

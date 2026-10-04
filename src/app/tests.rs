@@ -2,6 +2,9 @@ use super::*;
 use crate::state::Activity;
 use eframe::App;
 
+#[path = "safety_tests.rs"]
+mod safety_regressions;
+
 fn draw(
     app: &mut Harness,
     ctx: &egui::Context,
@@ -1099,6 +1102,15 @@ fn typing_keeps_large_tool_history_shared_while_background_saving() {
 #[ignore = "writes headless visual QA artifacts"]
 fn export_headless_previews() {
     for (preview, width, height) in [
+        ("git-branch", 1180, 820),
+        ("git-branch", 720, 540),
+        ("git-no-repo", 720, 540),
+        ("git-detached", 720, 540),
+        ("git-bare", 720, 540),
+        ("git-long-branch", 720, 540),
+        ("git-error", 720, 540),
+        ("trust-changed", 720, 540),
+        ("recovery-busy", 720, 540),
         ("trust", 1180, 820),
         ("trust", 720, 540),
         ("recovery", 1180, 820),

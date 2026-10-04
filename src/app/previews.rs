@@ -7,14 +7,52 @@ impl Harness {
             .strip_suffix("-details")
             .or_else(|| kind.strip_suffix("-advanced"))
             .unwrap_or(kind);
-        if kind == "trust" {
-            self.trust_request = Some(TrustRequest {
-                project: self.project().id,
-                chat: None,
-            });
+        if matches!(
+            kind,
+            "git-live"
+                | "git-branch"
+                | "git-no-repo"
+                | "git-detached"
+                | "git-bare"
+                | "git-error"
+                | "git-long-branch"
+        ) {
+            use crate::git_status::{Probe, Status};
+            self.git_probe = match kind {
+                "git-live" => Probe::default(),
+                "git-no-repo" => Probe::scripted(Status::NotRepository),
+                "git-detached" => Probe::scripted(Status::Detached {
+                    commit: "a1b2c3d".into(),
+                    bare: false,
+                }),
+                "git-bare" => Probe::scripted(Status::Branch {
+                    name: "main".into(),
+                    bare: true,
+                }),
+                "git-error" => Probe::scripted(Status::Unavailable(
+                    "Git is not installed or is not on PATH".into(),
+                )),
+                "git-long-branch" => Probe::scripted(Status::Branch {
+                    name: "feature/改善-long-branch-segment/".repeat(10),
+                    bare: false,
+                }),
+                _ => Probe::scripted(Status::Branch {
+                    name: "feature/git-indicators".into(),
+                    bare: false,
+                }),
+            };
+            self.saved.chats[0].draft = "Check this project's repository and branch.".into();
             return;
         }
-        if kind == "recovery" {
+        if matches!(kind, "trust" | "trust-changed") {
+            self.trust_request = Some(TrustRequest::for_project(self.project(), None));
+            if kind == "trust-changed" {
+                self.trust_request.as_mut().unwrap().workspace =
+                    Ok(PathBuf::from("/example/original-project"));
+            }
+            return;
+        }
+        if matches!(kind, "recovery" | "recovery-busy") {
             self.recovery = Some(crate::recovery::Recovery {
                 path: PathBuf::from("example-profile/chats.json"),
                 error: "Scripted preview: invalid saved JSON. Original history is preserved."
@@ -22,6 +60,14 @@ impl Harness {
             });
             self.recovery_open = true;
             self.store = persistence::Store::blocked("Scripted preview".into());
+            if kind == "recovery-busy" {
+                let (send, receive) = mpsc::channel();
+                self.recovery_rx = Some(receive);
+                self.runtime.spawn(async move {
+                    let _held = send;
+                    std::future::pending::<()>().await;
+                });
+            }
             return;
         }
         if kind == "edit-approval" {

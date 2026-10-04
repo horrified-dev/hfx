@@ -125,16 +125,17 @@ impl Harness {
                             if !tight {
                                 ui.horizontal(|ui| {
                                     theme::inline_icon(ui, Icon::Folder, 13.0, theme::MUTED);
-                                    ui.label(
-                                        RichText::new(&self.project().name)
-                                            .size(11.0)
-                                            .color(theme::MUTED),
-                                    );
-                                    ui.label(
-                                        RichText::new("/   This computer")
-                                            .size(11.0)
-                                            .color(theme::DIM),
-                                    );
+                                    ui.scope(|ui| {
+                                        ui.set_max_width(160.0);
+                                        ui.add(egui::Label::new(
+                                            RichText::new(&self.project().name).size(11.0).color(theme::MUTED),
+                                        ).truncate()).on_hover_text(&self.project().path);
+                                    });
+                                    ui.label(RichText::new("/").size(11.0).color(theme::DIM));
+                                    let status = self.git_probe.status_for(std::path::Path::new(&self.project().path));
+                                    ui.add(egui::Label::new(
+                                        RichText::new(status.label()).size(11.0).color(theme::MUTED),
+                                    ).truncate()).on_hover_text(status.detail());
                                 });
                             }
                             ui.add_space(4.0);
