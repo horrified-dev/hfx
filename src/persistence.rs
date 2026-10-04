@@ -210,7 +210,15 @@ pub fn read(path: &Path) -> Result<Option<Saved>, String> {
                 .map(Some)
                 .map_err(|e| format!("Cannot load saved chats: {e}"))
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => match path.symlink_metadata() {
+            Err(missing) if missing.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            // The path exists, but following it failed (e.g. an offline symlink
+            // target). Do not let startup/exit saves replace that original link.
+            Ok(_) => Err(format!(
+                "Cannot load saved chats: existing path is unavailable: {e}"
+            )),
+            Err(error) => Err(format!("Cannot inspect saved chats: {error}")),
+        },
         Err(e) => Err(format!("Cannot load saved chats: {e}")),
     }
 }

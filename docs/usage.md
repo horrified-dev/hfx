@@ -6,11 +6,17 @@ Projects, chats, attachments, queued follow-ups, and settings are saved locally.
 
 ## Projects and attachments
 
-Host commands and MCP require a one-time explicit trust acknowledgement for each project; existing projects also start untrusted after upgrading. Review, grant, or revoke it in **Settings → Tools → Project host access**. File tools do not imply host isolation; see [Tools & security](tools.md#command-access-and-git-authentication).
+Host commands and MCP require a one-time explicit trust acknowledgement for each project; existing projects also start untrusted after upgrading. Review, grant, or revoke it in **Settings → Tools → Project host access**. Approval is bound to the canonical directory shown in the dialog: if the path or symlink target changes, close the dialog and review the new location before granting trust. File tools do not imply host isolation; see [Tools & security](tools.md#command-access-and-git-authentication).
 
 Add projects with the **+** beside Projects, or **File → Add project**. Enter an existing folder path. Project chats have separate histories and drafts; right-click a chat to rename or delete it. Use the paperclip to choose files, paste copied files/screenshots with **Ctrl+V** (**Cmd+V** on macOS) while the chat input is focused, or drag files into the window. The **+** menu also offers paste and attachment by path. Each attachment has a removable preview; images show thumbnails. Attachments can be sent without a text prompt. Background loading stays with the chat where it started.
 
 Attachments support UTF-8 text/code (256 KiB each) and PNG, JPEG, WebP, or GIF images (10 MiB, at most 32 megapixels each), with up to 8 files per message. Images are normalized to PNG; GIF uses the first frame. Other binary document formats are rejected with a visible error. Text file contents are included as reference data; images use Responses `input_image` for OpenAI/Codex and Chat Completions `image_url` for OpenRouter/llama.cpp. Image inference requires a vision-capable model; llama.cpp also needs its multimodal projector configured. Explicit attachments may be outside the project. Clipboard images use arboard, Wayland file lists use data-control, and Windows file lists use CF_HDROP. Clipboard access happens only after a paste gesture. Platform clipboard/portal support varies; file selection and drag-and-drop remain available.
+
+## Git repository indicator
+
+The composer header checks the selected project's local Git metadata and shows **Git · branch-name**, **Git · detached @ commit**, **Git (bare) · branch-name**, or **Not a Git repo**. An initial branch with no commits and linked worktrees are supported. Long names are truncated visually; hover for details. Missing Git, inaccessible projects, malformed metadata, and ownership errors show **Git unavailable**, not a false non-repository result.
+
+Checks run in the background, refresh every three seconds, and time out after two seconds. Git output is bounded to 64 KiB per stream. Changing projects discards the previous project's results. These fixed read-only Git queries do not run a shell, invoke repository hooks or fsmonitor, fetch from remotes, modify the index, or grant project trust.
 
 ## Queueing and steering
 
@@ -50,7 +56,7 @@ After stopping generation, choose one explicit recovery action:
 - **Back up original and enable saving:** creates a private, synced `chats-recovery-<uuid>.json` beside the original without deleting it, then enables normal atomic saves for the current session. If backup fails, saving stays disabled and the error remains visible.
 - **Continue without saving:** dismisses the dialog without changing the original. Reopen it using **Review recovery** in the banner.
 
-Recovery disk work runs off the UI thread. No recovery or trust decision is automatically accepted by a timer.
+Recovery disk work runs off the UI thread. While a recovery job is running, **Hide recovery progress** only hides the dialog; it does not cancel the requested operation, and saving is enabled only on success. **Continue without saving** is offered only when no recovery job is pending. Existing dangling history symlinks also enter recovery rather than being replaced by fresh history; restore their target before retrying. No recovery or trust decision is automatically accepted by a timer.
 
 ## Shutdown and diagnostics
 

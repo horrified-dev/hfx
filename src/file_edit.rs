@@ -1,4 +1,7 @@
 //! Exact text edits with optimistic stale-content checks and atomic replacement.
+#[cfg(all(test, target_os = "linux"))]
+#[path = "file_edit_acl_tests.rs"]
+mod acl_tests;
 use crate::{
     state::ActionStatus,
     tools::{ToolOutput, file_change, workspace_path},
@@ -23,6 +26,8 @@ pub fn sha256(text: &str) -> String {
 struct Snapshot {
     text: String,
     permissions: std::fs::Permissions,
+    native: crate::file_metadata::Metadata,
+    file: std::fs::File,
 }
 
 fn snapshot(path: &Path, limit: usize) -> Result<Option<Snapshot>, String> {
@@ -33,7 +38,7 @@ fn snapshot(path: &Path, limit: usize) -> Result<Option<Snapshot>, String> {
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(libc::O_NONBLOCK);
     }
-    let file = match options.open(path) {
+    let mut file = match options.open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(format!("Cannot read file before editing: {error}")),
@@ -48,8 +53,11 @@ fn snapshot(path: &Path, limit: usize) -> Result<Option<Snapshot>, String> {
             limit / 1024
         ));
     }
+    let native = crate::file_metadata::Metadata::capture(&file)
+        .map_err(|e| format!("Cannot preserve file access controls: {e}"))?;
     let mut text = String::new();
-    file.take((limit + 1) as u64)
+    std::io::Read::by_ref(&mut file)
+        .take((limit + 1) as u64)
         .read_to_string(&mut text)
         .map_err(|e| e.to_string())?;
     if text.len() > limit {
@@ -58,6 +66,8 @@ fn snapshot(path: &Path, limit: usize) -> Result<Option<Snapshot>, String> {
     Ok(Some(Snapshot {
         text,
         permissions: metadata.permissions(),
+        native,
+        file,
     }))
 }
 
@@ -83,8 +93,12 @@ fn replace(
         file.write_all(after.as_bytes())
             .map_err(|e| e.to_string())?;
         if let Some(before) = before {
-            file.set_permissions(before.permissions.clone())
-                .map_err(|e| e.to_string())?;
+            before
+                .native
+                .preserve(&before.file, &file, &before.permissions)
+                .map_err(|e| {
+                    format!("Cannot preserve file access controls; no changes were written: {e}")
+                })?;
         }
         file.sync_all().map_err(|e| e.to_string())?;
         drop(file);
@@ -94,15 +108,17 @@ fn replace(
             return Err("File path changed while preparing the edit; read it again.".into());
         }
         let current = snapshot(path, MAX_EDIT_FILE_BYTES)?;
-        if before.map(|s| (s.text.as_str(), &s.permissions))
-            != current.as_ref().map(|s| (s.text.as_str(), &s.permissions))
+        if before.map(|s| (s.text.as_str(), &s.permissions, &s.native))
+            != current
+                .as_ref()
+                .map(|s| (s.text.as_str(), &s.permissions, &s.native))
         {
             return Err(
                 "File changed while preparing the edit; no changes were written. Read it again."
                     .into(),
             );
         }
-        std::fs::rename(&temporary, path).map_err(|e| e.to_string())
+        crate::file_metadata::replace(&temporary, path, before.is_some()).map_err(|e| e.to_string())
     })();
     if result.is_err() {
         let _ = std::fs::remove_file(temporary);

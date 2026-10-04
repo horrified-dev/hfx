@@ -88,6 +88,18 @@ struct PendingQuestion {
 struct TrustRequest {
     project: Uuid,
     chat: Option<Uuid>,
+    // Consent is bound to the directory displayed, not a later symlink target.
+    workspace: Result<PathBuf, String>,
+}
+
+impl TrustRequest {
+    fn for_project(project: &Project, chat: Option<Uuid>) -> Self {
+        Self {
+            project: project.id,
+            chat,
+            workspace: project.workspace(),
+        }
+    }
 }
 
 type AttachmentBatch = Result<Vec<Attachment>, String>;
@@ -295,6 +307,7 @@ pub struct Harness {
     toast: Option<(String, f64)>,
     view_started: f64,
     style_key: (f32, bool),
+    git_probe: crate::git_status::Probe,
     probe_rx: Option<Receiver<Result<Vec<backend::ModelInfo>, String>>>,
     mcp_probe: crate::mcp_ui::Probe,
     probe_result: Option<Result<Vec<backend::ModelInfo>, String>>,
@@ -398,6 +411,14 @@ impl Harness {
             toast: None,
             view_started: -100.0,
             style_key,
+            git_probe: if preview.is_some() {
+                crate::git_status::Probe::scripted(crate::git_status::Status::Branch {
+                    name: "main".into(),
+                    bare: false,
+                })
+            } else {
+                Default::default()
+            },
             probe_rx: None,
             mcp_probe: Default::default(),
             probe_result: None,

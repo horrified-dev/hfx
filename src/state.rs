@@ -348,10 +348,20 @@ impl Project {
             .is_ok_and(|path| self.trusts_workspace(&path))
     }
 
-    pub fn trust(&mut self) -> Result<(), String> {
-        let path = self.workspace()?;
-        self.trusted_path = Some(path.to_string_lossy().into_owned());
+    pub fn trust_workspace(&mut self, acknowledged: &std::path::Path) -> Result<(), String> {
+        if self.workspace()? != acknowledged {
+            return Err("Project directory changed since this dialog opened. Close it and review the new directory before granting trust.".into());
+        }
+        let path = acknowledged
+            .to_str()
+            .ok_or("Project directory is not valid UTF-8; trust was not granted.")?;
+        self.trusted_path = Some(path.to_owned());
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub fn trust(&mut self) -> Result<(), String> {
+        self.trust_workspace(&self.workspace()?)
     }
 
     pub fn from_path(path: String) -> Self {
