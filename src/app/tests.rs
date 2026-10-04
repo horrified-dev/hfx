@@ -17,6 +17,9 @@ mod context_regressions;
 #[path = "performance_tests.rs"]
 mod performance_regressions;
 
+#[path = "virtualization_tests.rs"]
+mod virtualization_regressions;
+
 fn draw(
     app: &mut Harness,
     ctx: &egui::Context,
@@ -1147,6 +1150,8 @@ fn export_headless_previews() {
         ("tools-advanced", 1180, 820),
         ("markdown", 1180, 820),
         ("markdown", 720, 540),
+        ("markdown-blocks", 1180, 820),
+        ("markdown-blocks", 720, 540),
         ("agent-tools", 1180, 820),
         ("agent-tools", 720, 540),
         ("web-tools", 1180, 820),

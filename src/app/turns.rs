@@ -200,6 +200,7 @@ impl Harness {
             while let Ok(event) = active.rx.try_recv() {
                 self.apply_event(&mut active, event);
             }
+            self.conversation_layout.invalidate(active.message);
             if let Some(message) = self
                 .saved
                 .chats
@@ -221,6 +222,7 @@ impl Harness {
     }
 
     pub(super) fn apply_event(&mut self, active: &mut Active, event: Event) -> Option<bool> {
+        self.conversation_layout.invalidate(active.message);
         if let Event::Steered(users) = event {
             let chat = self.saved.chats.iter_mut().find(|c| c.id == active.chat)?;
             let prior = chat.messages.iter_mut().find(|m| m.id == active.message)?;

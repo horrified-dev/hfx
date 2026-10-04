@@ -91,21 +91,74 @@ oversized lines retain the original owned drawing path without a text clone.
 Keys include exact source, font size, color, and strong style. Full source/style
 checks also prevent hash collisions from reusing the wrong formatting or link URL.
 Raw hashes avoid retaining streaming prefixes in egui's global debug Id registry.
-No glyphs, screen positions, or message heights are cached: width, zoom/DPI, font
-definition changes, reasoning/tool disclosures, and text reveal continue through
-native layout. Tests cover warm-frame geometry/formatting, resize/zoom/font changes,
+This parsing cache stores no glyphs, screen positions, or message heights: width,
+zoom/DPI, font definition changes, reasoning/tool disclosures, and text reveal
+continue through native layout. The conversation viewport separately retains exact
+message-height measurements as described below. Tests cover warm-frame geometry/formatting, resize/zoom/font changes,
 Unicode streaming prefixes, unsafe URLs, selection/copy, keyboard and pointer link
 activation, and cache entry/byte bounds. The cache is not part of saved chat data.
 
-### Remaining target: viewport virtualization
+## Message-level viewport virtualization
 
-The renderer still visits all messages and lays out their labels before visibility
-checks. Variable-height viewport virtualization remains the strongest target for
-very large conversations, but must preserve scroll-to-bottom behavior, links,
-selection, code copying, reasoning/tool disclosure state, and chronological tool
-blocks. It also needs robust invalidation for width, font/DPI, text/reveal, and
-activity changes. This pass does not introduce a fragile height cache or change
-scrolling behavior.
+The conversation now reserves the exact measured height of unchanged off-screen
+messages instead of laying out their labels on every frame. Visible messages and
+one viewport of overscan above/below use the original native message renderer.
+The renderer still scans lightweight message metadata; it avoids the expensive
+Markdown/widget construction for stable off-screen messages.
+
+The long-transcript diagnostic compares the full-layout fallback and virtualized
+path in the same release binary, with reduced-motion styling installed explicitly.
+The fixture has eight repeated prose/Unicode/link lines per reply at 1180×820,
+warms up for ten frames, then measures 30 frames. Three-run medians on the same
+Linux/Rust 1.98.1 machine used above were:
+
+| Completed replies | Full layout, CPU ms/frame | Virtualized, CPU ms/frame |
+| --- | ---: | ---: |
+| 16 | 0.171 | 0.067 |
+| 64 | 0.637 | 0.068 |
+| 256 | 2.652 | 0.077 |
+| 1,024 | 10.850 | 0.099 |
+
+The final warm frame laid out **five messages** in each virtualized fixture, versus
+all messages in the full-layout variant. These are CPU UI-construction/layout
+measurements, not GPU rendering, whole-app FPS, or model latency claims. Logs are
+under `.hfx/performance-review/viewport-benchmarks.log` (Git-ignored).
+
+### Correctness and invalidation
+
+- Heights are measured, never guessed. Cold rows, reordered/replaced messages, and
+  invalidated rows go through normal native layout even when off-screen.
+- Measurements are kept only for the selected conversation, outside saved state.
+  Chat switches and recovery reloads cannot reuse another conversation's heights.
+- Width, style, font size, font definitions/family order, pixel scale, reasoning
+  preferences, and approval-label changes invalidate the environment. Font data
+  identities are compared without scanning font-file bytes on each frame.
+- Backend events and Stop invalidate their original reply. Cheap structural keys
+  also track visible reveal lengths and message metadata without copying or
+  hashing large answer/reasoning bodies.
+- Each skipped message reserves its original auto-ID slot as well as its height.
+  Links, selection, code-copy buttons, and disclosure IDs therefore remain stable.
+- Native scrolling still follows the bottom only while sticky; appending below a
+  reader who scrolled up does not force them down. When remeasurement changes the
+  clamped/sticky offset, an egui corrective pass avoids painting a blank viewport.
+- Disclosures continue to be measured until their native animations settle, even
+  if the row leaves the viewport. Text selection/dragging and Tab traversal use the
+  full native path; a focused row remains pinned on subsequent idle frames.
+
+Viewport regressions cover warm-frame visible geometry against full layout at
+multiple scroll positions, resize/zoom/fonts/preferences, append/delete/reorder,
+chat switches, off-screen events, Unicode reveal, sticky/non-sticky scrolling,
+disclosure state/animation, focused composer and keyboard traversal, links,
+selection/copy, code copying, image viewing, and Markdown list/table blocks.
+Existing chronological-tool and recovery tests also continue to run.
+
+### Remaining limits
+
+Cold layout and global layout changes still measure the entire transcript once;
+this pass optimizes steady-state rendering, not initial layout. A single enormous
+visible reply still lays out its whole body. The standalone distinct-Markdown-line
+benchmark does not exercise message virtualization and is unchanged. Block-level
+virtualization within individual replies is a separate future target.
 
 ## Tool calls, text streaming, and request bodies
 

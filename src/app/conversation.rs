@@ -367,27 +367,120 @@ impl Harness {
         let messages = std::mem::take(&mut self.saved.chats[index].messages);
         let width = ui.available_width();
         let content = width.min(720.0);
-        ScrollArea::vertical()
+        let mut layout = std::mem::take(&mut self.conversation_layout);
+        // Native label selection visits labels in document order. Keep its
+        // original path during selection/dragging instead of dropping endpoints.
+        let focused = ui.ctx().memory(|memory| memory.focused());
+        let render_all = ui
+            .ctx()
+            .plugin::<egui::text_selection::LabelSelectionState>()
+            .lock()
+            .has_selection()
+            || ui.input(|input| input.pointer.primary_down() || input.key_pressed(egui::Key::Tab))
+            || focused != layout.focused;
+        #[cfg(test)]
+        let render_all = render_all || layout.force_full;
+        let mut drawn_offset = 0.0;
+        let mut heights_changed = false;
+        let output = ScrollArea::vertical()
             .id_salt(("conversation", self.saved.selected))
             .auto_shrink([false, false])
             .stick_to_bottom(true)
-            .show(ui, |ui| {
+            .show_viewport(ui, |ui, viewport| {
+                drawn_offset = viewport.min.y;
                 ui.horizontal(|ui| {
                     ui.add_space(((width - content) / 2.0).max(0.0));
                     ui.allocate_ui_with_layout(
                         vec2(content, 0.0),
                         Layout::top_down(Align::Min),
                         |ui| {
+                            layout.prepare(
+                                ui,
+                                self.saved.selected,
+                                &messages,
+                                &self.saved.settings,
+                                self.preview,
+                                self.pending.is_some(),
+                            );
+                            let overscan = ui.clip_rect().expand2(vec2(0.0, viewport.height()));
+                            let animation = ui.style().animation_time;
+                            let interacted = ui.input(|input| {
+                                input.pointer.any_pressed()
+                                    || input.pointer.any_released()
+                                    || input.key_pressed(egui::Key::Space)
+                                    || input.key_pressed(egui::Key::Enter)
+                            });
                             ui.add_space(20.0);
-                            for message in &messages {
-                                ui.push_id(message.id, |ui| self.message(ui, message, now));
-                                ui.add_space(28.0);
+                            for (row, message) in layout.rows.iter_mut().zip(&messages) {
+                                let (answer, reasoning) = self.reply_text(message);
+                                let key =
+                                    conversation_layout::render_key(message, answer, reasoning);
+                                let top = ui.cursor().min.y;
+                                let visible =
+                                    top <= overscan.max.y && top + row.height >= overscan.min.y;
+                                let pinned = focused.is_some() && row.focused == focused;
+                                if !render_all && !visible && !pinned && row.reusable(key, now) {
+                                    ui.add_space(row.height);
+                                    // push_id consumes one auto-ID slot; add_space
+                                    // consumes none. Keep every later widget's ID.
+                                    ui.skip_ahead_auto_ids(1);
+                                } else {
+                                    ui.push_id(message.id, |ui| self.message(ui, message, now));
+                                    ui.add_space(28.0);
+                                    let height = ui.cursor().min.y - top;
+                                    if row.height != height {
+                                        heights_changed = true;
+                                        ui.ctx().request_repaint();
+                                    }
+                                    row.measure(key, height, now, animation);
+                                    // Tab traversal uses the native full path. Once
+                                    // focused, pin that row even when off-screen so
+                                    // egui never loses the keyboard target on an idle frame.
+                                    let rect = egui::Rect::from_min_max(
+                                        pos2(ui.max_rect().left(), top),
+                                        pos2(ui.max_rect().right(), top + height),
+                                    );
+                                    row.focused =
+                                        ui.ctx().memory(|memory| memory.focused()).filter(|id| {
+                                            ui.ctx().read_response(*id).is_some_and(|response| {
+                                                response.layer_id == ui.layer_id()
+                                                    && rect.intersects(response.rect)
+                                            })
+                                        });
+                                    if visible && interacted {
+                                        row.interacted(now, animation);
+                                    }
+                                    #[cfg(test)]
+                                    {
+                                        layout.rendered += 1;
+                                    }
+                                }
                             }
                             ui.add_space(12.0);
                         },
                     );
                 });
             });
+        // Native scrolling clamps/follows the bottom after measuring content.
+        // If heights changed, paint again at that corrected offset in this frame
+        // rather than briefly showing a blank/stale viewport after resize/append.
+        if heights_changed && (output.state.offset.y - drawn_offset).abs() > 1.0 {
+            ui.ctx()
+                .request_discard("Conversation height changed scroll offset");
+        }
+        #[cfg(test)]
+        {
+            layout.viewport = Some(conversation_layout::Viewport {
+                id: output.id,
+                content_height: output.content_size.y,
+                offset: output.state.offset.y,
+                rect: output.inner_rect,
+            });
+        }
+        #[cfg(not(test))]
+        let _ = output;
+        layout.focused = ui.ctx().memory(|memory| memory.focused());
+        self.conversation_layout = layout;
         self.saved.chats[index].messages = messages;
     }
 

@@ -44,6 +44,22 @@ Older context is summarized by the selected model without workspace tools. The l
 
 **Settings → Providers → Context** lets you disable compaction or set the selected model's context window independently of its maximum output tokens. Model metadata is learned through **Test connection** (OpenRouter/compatible servers and llama.cpp's allocated context) or Codex model discovery. When metadata is unavailable, the fallback is **128,000 tokens**, not a verified model limit: set it to your model's actual window for an accurate threshold. Codex windows vary by model; for a model with a **272,000-token** window, compaction starts at **204,000 tokens**. Provider metadata refreshes separately from manual overrides; use **Use discovered limit / fallback** to remove an override. Limits are stored per provider, endpoint, and model. Output requests are capped at one quarter of the context window to leave room for input; compaction can run sooner if necessary to reserve output space. A single oversized latest request that cannot be safely compacted produces a clear error rather than being truncated.
 
+## Chat formatting
+
+Replies render headings, bold text, inline code, safe HTTP(S) links, and fenced
+code blocks with a copy button. Unordered lists (`-`, `+`, or `*`) show real bullet
+markers; ordered lists (`1.` or `1)`) show consecutive numbers. Nested items and
+continuation text retain their indentation, and wrapped lines align beneath the
+item text rather than its marker.
+
+Pipe tables render as rows and columns once a matching delimiter row is present.
+Headers are emphasized; `:---`, `:---:`, and `---:` select left, center, and right
+alignment. Cells support the same inline formatting, selection, and links as
+ordinary prose. Escaped pipes and code-span pipes stay inside their cells. Tables
+wrap within the chat; wider tables have their own horizontal scroll area.
+Malformed/incomplete tables and tables above 64 columns remain literal rather
+than losing content. Markdown inside fenced code stays literal.
+
 ## Motion and persistence
 
 - UTF-8-safe text reveal smooths bursts from every provider and accelerates to catch up with long responses.

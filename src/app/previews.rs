@@ -101,6 +101,7 @@ impl Harness {
             kind,
             "chat"
                 | "markdown"
+                | "markdown-blocks"
                 | "reasoning"
                 | "approval"
                 | "actions"
@@ -141,6 +142,21 @@ impl Harness {
                 let message = &mut self.saved.chats[0].messages[1];
                 message.reasoning.clear();
                 message.text = "Commit: [`9e9b32d`](https://github.com/horrified-dev/hfx/commit/9e9b32d61e9cf50c9b5f598110fd40a8693111cb)\n— `docs: streamline README and add harness screenshots`\n\nLinks stay inline with **bold text**, `code`, and normal text.\n\nSee [the hfx repository](https://github.com/horrified-dev/hfx) for details.\n\nLiteral code stays literal: `[label](https://example.com)`".into();
+                for message in &self.saved.chats[0].messages {
+                    self.reveals.insert(
+                        message.id,
+                        (Reveal::complete(&message.text), Reveal::default()),
+                    );
+                }
+            }
+            if kind == "markdown-blocks" {
+                self.saved.settings.show_reasoning = false;
+                self.saved.chats[0].title = "Lists and tables".into();
+                self.saved.chats[0].messages[0].text =
+                    "Show the performance report with real bullets and a readable table.".into();
+                let message = &mut self.saved.chats[0].messages[1];
+                message.reasoning.clear();
+                message.text = "Implemented **task #1: message-level viewport virtualization**.\n\n- Stable off-screen messages now reserve their exact measured height instead of rebuilding widgets every frame.\n- Preserves bottom-follow, disclosures, selection, keyboard focus, links, copying, and image viewing.\n- Remeasures changed content on resize, font/DPI changes, chat switches, and recovery.\n- Added **10 regression tests** and updated performance documentation.\n\n### Release results\nThree-run medians; CPU layout time, not FPS.\n\n| Replies | Full layout | Virtualized |\n| --- | ---: | ---: |\n| 16 | 0.171 ms/frame | 0.067 ms/frame |\n| 64 | 0.637 ms/frame | 0.068 ms/frame |\n| 256 | 2.652 ms/frame | 0.077 ms/frame |\n| 1,024 | 10.850 ms/frame | 0.099 ms/frame |".into();
                 for message in &self.saved.chats[0].messages {
                     self.reveals.insert(
                         message.id,

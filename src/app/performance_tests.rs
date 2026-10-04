@@ -168,52 +168,58 @@ fn stop_drains_pending_tool_context_deltas_into_the_original_reply() {
 #[ignore = "manual long-transcript layout measurement"]
 fn profile_long_transcript_frames() {
     use std::hint::black_box;
-    for messages in [16, 64, 256] {
-        let ctx = egui::Context::default();
-        let cc = eframe::CreationContext::_new_kittest(ctx.clone());
-        let mut app = Harness::new(&cc, Some("welcome".into()));
-        app.saved.settings.reduced_motion = true;
-        let body = "A completed reply with **formatted prose**, Unicode café 🌿, and a [documentation link](https://example.com/docs).\n".repeat(8);
-        for index in 0..messages {
-            let message = Message::new(
-                false,
-                format!("Reply {index}\n{body}"),
-                0.0,
-                "llama.cpp".into(),
+    for messages in [16, 64, 256, 1_024] {
+        for virtualized in [false, true] {
+            let ctx = egui::Context::default();
+            let cc = eframe::CreationContext::_new_kittest(ctx.clone());
+            let mut app = Harness::new(&cc, Some("welcome".into()));
+            app.saved.settings.reduced_motion = true;
+            theme::install(&ctx, 14.0, true);
+            app.conversation_layout.force_full = !virtualized;
+            let body = "A completed reply with **formatted prose**, Unicode café 🌿, and a [documentation link](https://example.com/docs).\n".repeat(8);
+            for index in 0..messages {
+                let message = Message::new(
+                    false,
+                    format!("Reply {index}\n{body}"),
+                    0.0,
+                    "llama.cpp".into(),
+                );
+                app.reveals.insert(
+                    message.id,
+                    (Reveal::complete(&message.text), Reveal::default()),
+                );
+                app.saved.chats[0].messages.push(message);
+            }
+            let mut laid_out = 0;
+            let mut render = |frame| {
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            pos2(0.0, 0.0),
+                            vec2(1180.0, 820.0),
+                        )),
+                        time: Some(frame as f64 / 60.0),
+                        ..Default::default()
+                    },
+                    |ui| app.conversation(ui, frame as f64 / 60.0),
+                );
+                laid_out = app.conversation_layout.rendered;
+                output.textures_delta.clear();
+                black_box(output);
+            };
+            for frame in 0..10 {
+                render(frame);
+            }
+            let frames = 30;
+            let start = Instant::now();
+            for frame in 10..frames + 10 {
+                render(frame);
+            }
+            println!(
+                "{messages} completed prose replies virtualized={virtualized}: {:.3} ms/frame, {laid_out} messages laid out in final frame",
+                start.elapsed().as_secs_f64() * 1000.0 / frames as f64
             );
-            app.reveals.insert(
-                message.id,
-                (Reveal::complete(&message.text), Reveal::default()),
-            );
-            app.saved.chats[0].messages.push(message);
         }
-        let mut render = |frame| {
-            let mut output = ctx.run_ui(
-                egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(
-                        pos2(0.0, 0.0),
-                        vec2(1180.0, 820.0),
-                    )),
-                    time: Some(frame as f64 / 60.0),
-                    ..Default::default()
-                },
-                |ui| app.conversation(ui, frame as f64 / 60.0),
-            );
-            output.textures_delta.clear();
-            black_box(output);
-        };
-        for frame in 0..10 {
-            render(frame);
-        }
-        let frames = 30;
-        let start = Instant::now();
-        for frame in 10..frames + 10 {
-            render(frame);
-        }
-        println!(
-            "{messages} completed prose replies: {:.3} ms/frame",
-            start.elapsed().as_secs_f64() * 1000.0 / frames as f64
-        );
     }
 }
 

@@ -44,6 +44,7 @@ impl Harness {
                         self.textures.clear();
                         self.thumbnails.clear();
                         self.action_targets.clear();
+                        self.conversation_layout = Default::default();
                         self.queue_edit = None;
                         self.rename = None;
                         self.trust_request = None;

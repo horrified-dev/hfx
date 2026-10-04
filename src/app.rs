@@ -1,6 +1,7 @@
 mod attachments_ui;
 mod composer;
 mod conversation;
+mod conversation_layout;
 mod dialogs;
 mod edits;
 mod previews;
@@ -290,6 +291,7 @@ pub struct Harness {
     image_save_rx: Option<Receiver<ImageSaveResult>>,
     reveals: HashMap<Uuid, (Reveal, Reveal)>,
     action_targets: HashMap<(Uuid, usize), String>,
+    conversation_layout: conversation_layout::ConversationLayout,
     sidebar: bool,
     settings_open: bool,
     settings_tab: usize,
@@ -395,6 +397,7 @@ impl Harness {
             image_save_rx: None,
             reveals,
             action_targets: HashMap::new(),
+            conversation_layout: Default::default(),
             sidebar: true,
             settings_open: false,
             settings_tab: 0,

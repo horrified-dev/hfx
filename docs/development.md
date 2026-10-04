@@ -61,6 +61,12 @@ The distinct-line comparison tests bounded parsing-cache reuse and over-capacity
 fallback against the original owned rendering path in the same binary. Markdown
 regressions also cover live resize, zoom, font changes, streamed Unicode/unsafe URLs,
 cache lifetime/bounds, and preserved selection/link interactions.
+The long-transcript comparison runs the full-layout fallback and exact-height
+message virtualization in the same binary, reports messages laid out per warm
+frame, and includes 1,024 replies. Viewport regressions compare native visible
+geometry and cover invalidation, scrolling, disclosures, selection/copy, keyboard
+focus, and image viewing; cold layout and single huge visible replies remain
+separate costs.
 The follow-up diagnostics compare borrowed request serialization, within-chunk stream
 batching, and controlled local/HTTP tool I/O with preserved execution barriers.
 Compare runs on the same machine and build profile; the commands above use optimized
@@ -96,9 +102,17 @@ cargo run --locked -- --preview=attachments
 cargo run --locked -- --preview=question
 cargo run --locked -- --preview=images
 cargo run --locked -- --preview=image-viewer
+cargo run --locked -- --preview=markdown-blocks
 ```
 
 Other previews: `trust`, `trust-changed`, `recovery`, `recovery-busy`, `edit-approval`, `git-branch`, `git-no-repo`, `git-detached`, `git-bare`, `git-long-branch`, `git-error`, `markdown`, `reasoning`, `appearance`, `tools`, `menu`, `codex`, `openrouter`, and `git-attribution`. `edits-settled` shows preserved action history without a pending badge; `edits-live` uses synthetic edit history but checks the current directory's real Git state. `git-live` keeps synthetic chat data but probes the current directory's real, local Git metadata. The [Markdown preview](../artifacts/markdown-preview.png) demonstrates commit links, formatted labels, and literal code.
+
+The `markdown-blocks` preview reproduces the performance report with actual
+bullets, hanging indents, and aligned table cells. Markdown block tests cover
+nested/ordered lists, continuations, literal code, table validation/escapes,
+streaming, narrow layouts, resize/font/DPI changes, selection, safe links, and
+horizontal scrolling. Viewport tests also compare list/table geometry with the
+full-layout fallback.
 
 ### Refresh README screenshots
 
@@ -152,12 +166,14 @@ cargo test --locked demo_blender_mcp -- --ignored --nocapture
 - [`src/app.rs`](../src/app.rs): native shell, shared harness state, project navigation, and lifecycle hooks.
 - [`src/app/turns.rs`](../src/app/turns.rs): queue/steering coordination and bounded event polling.
 - [`src/app/conversation.rs`](../src/app/conversation.rs): conversation, action history and diff rendering.
+- [`src/app/conversation_layout.rs`](../src/app/conversation_layout.rs): transient exact-height viewport measurements, invalidation, and off-screen row reuse.
 - [`src/app/composer.rs`](../src/app/composer.rs): composer and queued-message controls.
 - [`src/app/attachments_ui.rs`](../src/app/attachments_ui.rs): attachment input, thumbnails and image viewer.
 - [`src/app/settings.rs`](../src/app/settings.rs): provider, tool, appearance and auth settings.
 - [`src/app/dialogs.rs`](../src/app/dialogs.rs): project, rename, queue-edit and tool-approval dialogs.
 - [`src/app/safety.rs`](../src/app/safety.rs): explicit recovery and project-trust UI.
 - [`src/app/previews.rs`](../src/app/previews.rs), [`src/app/tests.rs`](../src/app/tests.rs): isolated scripted previews and headless GUI regression tests.
+- [`src/markdown.rs`](../src/markdown.rs), [`src/markdown_blocks.rs`](../src/markdown_blocks.rs): selectable inline Markdown, list/table block parsing and native layout.
 - [`src/backend.rs`](../src/backend.rs): async streaming adapters, SSE decoder, agent loop, connection probing.
 - [`src/codex.rs`](../src/codex.rs): direct OpenAI OAuth, PKCE callback, private login cache, token refresh, and model discovery.
 - [`src/context.rs`](../src/context.rs): token estimates, model context limits, compaction planning, and checkpoints.

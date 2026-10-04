@@ -4,6 +4,8 @@ use std::ops::Range;
 
 use eframe::egui::{self, Color32, FontId, Pos2, Rect, Sense, Stroke, Ui};
 
+#[path = "markdown_blocks.rs"]
+mod blocks;
 #[path = "markdown_cache.rs"]
 mod parse_cache;
 
@@ -343,33 +345,7 @@ fn paint_inline(ui: &mut Ui, job: egui::text::LayoutJob, links: &[InlineLink], c
 
 /// Stable block layout while streaming. Code blocks can be copied independently.
 pub fn show(ui: &mut Ui, text: &str, size: f32, color: Color32) {
-    let mut code: Option<(String, String)> = None;
-    for line in text.split('\n') {
-        if let Some(language) = line.strip_prefix("```") {
-            if let Some((language, body)) = code.take() {
-                code_block(ui, &language, &body);
-            } else {
-                code = Some((language.to_owned(), String::new()));
-            }
-        } else if let Some((_, body)) = &mut code {
-            body.push_str(line);
-            body.push('\n');
-        } else if line.is_empty() {
-            ui.add_space(5.0);
-        } else if let Some(heading) = line
-            .strip_prefix("### ")
-            .or_else(|| line.strip_prefix("## "))
-            .or_else(|| line.strip_prefix("# "))
-        {
-            ui.add_space(8.0);
-            inline_label(ui, heading, size + 2.0, TEXT, true);
-        } else {
-            inline_label(ui, line, size, color, false);
-        }
-    }
-    if let Some((language, body)) = code {
-        code_block(ui, &language, &body);
-    }
+    blocks::show(ui, text, size, color);
 }
 
 fn code_block(ui: &mut Ui, language: &str, body: &str) {
@@ -410,6 +386,10 @@ fn code_block(ui: &mut Ui, language: &str, body: &str) {
                 });
         });
 }
+
+#[cfg(test)]
+#[path = "markdown_block_tests.rs"]
+mod block_tests;
 
 #[cfg(test)]
 #[path = "markdown_performance_tests.rs"]
