@@ -6,6 +6,8 @@ Projects, chats, attachments, queued follow-ups, and settings are saved locally.
 
 ## Projects and attachments
 
+Host commands and MCP require a one-time explicit trust acknowledgement for each project; existing projects also start untrusted after upgrading. Review, grant, or revoke it in **Settings → Tools → Project host access**. File tools do not imply host isolation; see [Tools & security](tools.md#command-access-and-git-authentication).
+
 Add projects with the **+** beside Projects, or **File → Add project**. Enter an existing folder path. Project chats have separate histories and drafts; right-click a chat to rename or delete it. Use the paperclip to choose files, paste copied files/screenshots with **Ctrl+V** (**Cmd+V** on macOS) while the chat input is focused, or drag files into the window. The **+** menu also offers paste and attachment by path. Each attachment has a removable preview; images show thumbnails. Attachments can be sent without a text prompt. Background loading stays with the chat where it started.
 
 Attachments support UTF-8 text/code (256 KiB each) and PNG, JPEG, WebP, or GIF images (10 MiB, at most 32 megapixels each), with up to 8 files per message. Images are normalized to PNG; GIF uses the first frame. Other binary document formats are rejected with a visible error. Text file contents are included as reference data; images use Responses `input_image` for OpenAI/Codex and Chat Completions `image_url` for OpenRouter/llama.cpp. Image inference requires a vision-capable model; llama.cpp also needs its multimodal projector configured. Explicit attachments may be outside the project. Clipboard images use arboard, Wayland file lists use data-control, and Windows file lists use CF_HDROP. Clipboard access happens only after a paste gesture. Platform clipboard/portal support varies; file selection and drag-and-drop remain available.
@@ -37,6 +39,18 @@ Older context is summarized by the selected model without workspace tools. The l
 - Serialization and disk writes run on a background worker with buffered I/O and a single coalesced latest pending snapshot. Large tool outputs and image/context payloads are shared in save snapshots, and the UI renders conversations without copying their history each frame. Action labels are cached instead of repeatedly parsing full file-edit arguments while typing.
 - API keys entered in settings remain in memory and are **never serialized**. Use environment variables to avoid re-entering them after relaunch.
 - Conversations and file context are saved locally in plaintext; images are stored as base64 in the same local state. On Linux, chat state is normally in `~/.local/share/hfx/chats.json` (or under `XDG_DATA_HOME`); `app.ron` holds lightweight UI state. Legacy chats migrate automatically after the first successful background save. Chat files use mode 0600 on Unix. macOS and Windows use eframe's platform data directory.
+
+## Recovering a chat-state load failure
+
+If `chats.json` is unreadable, malformed, or incompatible, hfx preserves it and shows a recovery dialog plus a persistent **saving is disabled** banner. A legacy or fresh temporary session may be used in memory, but startup saves, background autosaves, clean-exit saves, and legacy-state deletion remain blocked. Continuing without saving means changes in that temporary session are not durable.
+
+After stopping generation, choose one explicit recovery action:
+
+- **Retry loading original:** repair or restore the file first, then reload it. This replaces the temporary session; its unsaved changes are discarded. Restored queues stay paused.
+- **Back up original and enable saving:** creates a private, synced `chats-recovery-<uuid>.json` beside the original without deleting it, then enables normal atomic saves for the current session. If backup fails, saving stays disabled and the error remains visible.
+- **Continue without saving:** dismisses the dialog without changing the original. Reopen it using **Review recovery** in the banner.
+
+Recovery disk work runs off the UI thread. No recovery or trust decision is automatically accepted by a timer.
 
 ## Shutdown and diagnostics
 

@@ -439,7 +439,7 @@ async fn discovery_rejects_excessive_tools_duplicate_names_and_repeated_cursors(
     let root = tempfile::tempdir().unwrap();
     let fixture = http_fixture(false).await;
     for (path, error) in [
-        ("oversize", "more than 119"),
+        ("oversize", "more than 118"),
         ("repeat", "pagination cursor"),
         ("duplicate", "duplicate tool name"),
     ] {

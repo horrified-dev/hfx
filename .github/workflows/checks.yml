@@ -1,0 +1,62 @@
+name: Rust quality checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux / Rust ${{ matrix.toolchain }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: ['1.95', stable]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install native build and sandbox dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libwayland-dev libxkbcommon-dev libx11-dev libxi-dev libxrandr-dev libxcursor-dev libxinerama-dev libgl1-mesa-dev desktop-file-utils meson ninja-build libcap-dev
+      - name: Provision bubblewrap 0.12 for the real sandbox regression tests
+        run: |
+          git clone --depth 1 --branch v0.12.0 https://github.com/containers/bubblewrap.git "$RUNNER_TEMP/bubblewrap"
+          test "$(git -C "$RUNNER_TEMP/bubblewrap" rev-parse HEAD)" = 2a76602a8c71f36c1527cf9fc3417d9149822e0c
+          meson setup "$RUNNER_TEMP/bubblewrap/build" "$RUNNER_TEMP/bubblewrap" --prefix=/usr -Dman=disabled -Dtests=false
+          ninja -C "$RUNNER_TEMP/bubblewrap/build"
+          sudo ninja -C "$RUNNER_TEMP/bubblewrap/build" install
+          # Ubuntu runner policy otherwise blocks unprivileged user namespaces.
+          # This is scoped to the disposable CI VM, never a user installation.
+          if test -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          /usr/bin/bwrap --version
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: linux-${{ matrix.toolchain }}
+      - name: Check formatting
+        run: cargo fmt --all --check
+      - name: Run core regression tests
+        run: cargo test --locked
+      - name: Enforce warning-free Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Build the executable for installer fixtures
+        run: cargo build --locked
+      - name: Validate installer shell syntax
+        run: bash -n scripts/*.sh
+      - name: Check Linux installer in an isolated fixture
+        run: python3 tests/linux_install.py target/debug/hfx
+      - name: Check macOS installer filesystem fixtures
+        run: python3 tests/macos_install.py

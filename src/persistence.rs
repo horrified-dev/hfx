@@ -28,6 +28,7 @@ pub struct Store {
     results: mpsc::Receiver<SaveResult>,
     worker: Option<thread::JoinHandle<()>>,
     pub saved_once: bool,
+    blocked: Option<String>,
 }
 
 // Ensure flush callers are released even if the worker unexpectedly panics.
@@ -59,9 +60,16 @@ impl Store {
                     results,
                     worker: None,
                     saved_once: false,
+                    blocked: None,
                 }
             }
         }
+    }
+
+    pub fn blocked(reason: String) -> Self {
+        let mut store = Self::new(None);
+        store.blocked = Some(reason);
+        store
     }
 
     fn with_writer(mut write_state: impl FnMut(&Saved) -> SaveResult + Send + 'static) -> Self {
@@ -97,6 +105,7 @@ impl Store {
             results,
             worker: Some(worker),
             saved_once: false,
+            blocked: None,
         }
     }
 
@@ -134,6 +143,9 @@ impl Store {
     /// Clean exit waits for this snapshot (or a newer one) to be durably saved,
     /// replacing a stale pending autosave rather than queuing behind it.
     pub fn flush(&self, state: &Saved) -> SaveResult {
+        if let Some(reason) = &self.blocked {
+            return Err(format!("Chat saving is disabled until recovery: {reason}"));
+        }
         if self.shared.is_none() {
             return Ok(());
         }
@@ -171,11 +183,33 @@ impl Drop for Store {
     }
 }
 
+// Open non-blocking before inspecting metadata so a FIFO cannot hang startup or recovery.
+pub fn open_history(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options.open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::other("Chat state is not a regular file"));
+    }
+    Ok(file)
+}
+
 pub fn read(path: &Path) -> Result<Option<Saved>, String> {
-    match std::fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .map(Some)
-            .map_err(|e| format!("Cannot load saved chats: {e}")),
+    use std::io::Read;
+    match open_history(path) {
+        Ok(mut file) => {
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes)
+                .map_err(|e| format!("Cannot load saved chats: {e}"))?;
+            serde_json::from_slice(&bytes)
+                .map(Some)
+                .map_err(|e| format!("Cannot load saved chats: {e}"))
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(format!("Cannot load saved chats: {e}")),
     }
@@ -186,7 +220,7 @@ fn write(path: &Path, state: &Saved) -> Result<(), String> {
     let parent = path.parent().ok_or("Invalid chat storage path")?;
     std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     let temporary = parent.join(format!(".chats-{}.tmp", uuid::Uuid::new_v4()));
-    let result = (|| {
+    let result: SaveResult = (|| {
         let mut options = std::fs::OpenOptions::new();
         options.create_new(true).write(true);
         #[cfg(unix)]
@@ -201,7 +235,13 @@ fn write(path: &Path, state: &Saved) -> Result<(), String> {
         serde_json::to_writer(&mut writer, state).map_err(|e| e.to_string())?;
         writer.flush().map_err(|e| e.to_string())?;
         writer.get_ref().sync_all().map_err(|e| e.to_string())?;
-        std::fs::rename(&temporary, path).map_err(|e| e.to_string())
+        drop(writer);
+        std::fs::rename(&temporary, path).map_err(|e| e.to_string())?;
+        #[cfg(unix)]
+        std::fs::File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|e| e.to_string())?;
+        Ok(())
     })();
     if result.is_err() {
         let _ = std::fs::remove_file(temporary);

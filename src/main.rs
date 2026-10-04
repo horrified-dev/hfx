@@ -4,6 +4,7 @@ mod backend;
 mod codex;
 mod commands;
 mod context;
+mod file_edit;
 mod file_read;
 mod lifecycle;
 #[cfg(target_os = "linux")]
@@ -14,6 +15,7 @@ mod mcp_ui;
 mod motion;
 mod notifications;
 mod persistence;
+mod recovery;
 mod sandbox;
 mod settings_ui;
 mod state;

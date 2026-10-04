@@ -41,6 +41,7 @@ async fn mcp_tools_reach_every_provider_with_review_and_ordered_results() {
             let (tx, rx) = std::sync::mpsc::channel();
             let task = tokio::spawn(run(
                 Request {
+                    project_trusted: true,
                     settings,
                     workspace: root.path().into(),
                     history: vec![Message::new(

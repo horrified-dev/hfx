@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::{Component, Path, PathBuf};
 
+pub const NATIVE_TOOL_COUNT: usize = 10;
+
 #[derive(Debug)]
 pub struct ToolOutput {
     pub text: String,
@@ -112,6 +114,7 @@ impl ToolCall {
                         | "view_image"
                         | "send_image"
                         | "write_file"
+                        | "edit_file"
                         | "run_command"
                         | "web_search"
                         | "web_fetch"
@@ -149,7 +152,7 @@ pub fn definitions_for(settings: &Settings, openai: bool) -> Vec<Value> {
         ),
         (
             "read_file",
-            "Read a workspace UTF-8 file of any size. offset is a zero-based byte position (null starts at 0); max_bytes is an optional page size (null uses the context-aware budget). Use null for unspecified values. Large reads succeed with a bounded page, eof=false and next_offset; continue at next_offset when more is needed. Never claim a partial page is the whole file. UTF-8 boundaries are preserved. Limits apply to each response, not file size.",
+            "Read a workspace UTF-8 file of any size. offset is a zero-based byte position (null starts at 0); max_bytes is an optional page size (null uses the context-aware budget). Use null for unspecified values. Large reads succeed with a bounded page, eof=false and next_offset; continue at next_offset when more is needed. Never claim a partial page is the whole file. Every result includes paging metadata; sha256 is a whole-file digest only for a complete read from offset zero, otherwise null. UTF-8 boundaries are preserved. Limits apply to each response, not file size.",
             json!({"path":{"type":"string"},"offset":{"type":["integer","null"],"minimum":0},"max_bytes":{"type":["integer","null"],"minimum":4}}),
             vec!["path", "offset", "max_bytes"],
         ),
@@ -167,9 +170,15 @@ pub fn definitions_for(settings: &Settings, openai: bool) -> Vec<Value> {
         ),
         (
             "write_file",
-            "Create or replace a workspace text file. Workspace actions are authorized automatically unless review mode is enabled.",
+            "Create or replace a workspace text file up to 256 KiB. Prefer edit_file for existing files. Workspace actions are authorized automatically unless review mode is enabled.",
             json!({"path":{"type":"string"},"content":{"type":"string"}}),
             vec!["path", "content"],
+        ),
+        (
+            "edit_file",
+            "Precisely replace one unique, non-empty old_text in an existing UTF-8 workspace file (up to 16 MiB). Include enough surrounding context to make the match unique. new_text may be empty for deletion. Each fragment is limited to 256 KiB. Set expected_sha256 to the full-file digest from a complete read_file result, or null when unavailable. Mismatched text, ambiguous matches, stale digests, and detected concurrent changes fail without writing. Read the current file before retrying. Records an edit diff; review mode requires approval.",
+            json!({"path":{"type":"string"},"old_text":{"type":"string","minLength":1},"new_text":{"type":"string"},"expected_sha256":{"type":["string","null"]}}),
+            vec!["path", "old_text", "new_text", "expected_sha256"],
         ),
         (
             "run_command",
@@ -253,7 +262,7 @@ pub fn read_text(root: &Path, relative: &str) -> Result<String, String> {
         &json!({}),
         crate::file_read::default_budget(&Settings::default()),
     )
-    .map(|page| page.result(relative))
+    .map(|page| page.content)
 }
 
 #[cfg(test)]
@@ -335,57 +344,8 @@ pub async fn execute_with_read_budget(
                     entries.join("\n")
                 )))
             }
-            "write_file" => {
-                let content = args["content"].as_str().ok_or("Missing file content")?;
-                if content.len() > 262144 {
-                    return Err("Write exceeds the 256 KiB limit.".into());
-                }
-                let path = workspace_path(&root, relative, true)?;
-                let existed = path.exists();
-                let before = if existed {
-                    if path.metadata().map_err(|e| e.to_string())?.len() > 262144 {
-                        return Err("Existing file exceeds the 256 KiB edit limit.".into());
-                    }
-                    std::fs::read_to_string(&path).map_err(|e| e.to_string())?
-                } else {
-                    String::new()
-                };
-                let parent = path.parent().ok_or("Invalid file path")?;
-                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-                let temp = parent.join(format!(".hfx-{}.tmp", uuid::Uuid::new_v4()));
-                let result = (|| {
-                    use std::io::Write;
-                    let mut file = std::fs::OpenOptions::new()
-                        .write(true)
-                        .create_new(true)
-                        .open(&temp)
-                        .map_err(|e| e.to_string())?;
-                    file.write_all(content.as_bytes())
-                        .map_err(|e| e.to_string())?;
-                    file.sync_all().map_err(|e| e.to_string())?;
-                    if let Ok(meta) = path.metadata() {
-                        std::fs::set_permissions(&temp, meta.permissions())
-                            .map_err(|e| e.to_string())?;
-                    }
-                    std::fs::rename(&temp, &path).map_err(|e| e.to_string())?;
-                    Ok(ToolOutput {
-                        text: format!("Wrote {relative} ({} bytes)", content.len()),
-                        status: ActionStatus::Complete,
-                        images: Vec::new(),
-                        change: (before != content || !existed).then(|| {
-                            let mut change = file_change(relative, &before, content);
-                            if !existed && content.is_empty() {
-                                change.diff = "Created an empty file.".into();
-                            }
-                            change
-                        }),
-                    })
-                })();
-                if result.is_err() {
-                    let _ = std::fs::remove_file(temp);
-                }
-                result
-            }
+            "write_file" => crate::file_edit::write(&root, relative, &args),
+            "edit_file" => crate::file_edit::edit(&root, relative, &args),
             _ => Err(format!("Unknown tool: {}", call.name)),
         }
     })
@@ -420,6 +380,7 @@ mod tests {
         let mut settings = Settings::default();
         for responses in [true, false] {
             let definitions = definitions_for(&settings, responses);
+            assert_eq!(definitions.len(), NATIVE_TOOL_COUNT);
             let function = |name: &str| {
                 definitions
                     .iter()

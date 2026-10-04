@@ -23,16 +23,13 @@ pub struct Page {
     pub next_offset: u64,
     pub file_bytes: u64,
     pub eof: bool,
-    explicit_range: bool,
 }
 
 impl Page {
     pub fn result(self, relative: &str) -> String {
-        // Preserve ordinary small-file output and old path-only callers.
-        if self.eof && self.offset == 0 && !self.explicit_range {
-            return self.content;
-        }
-        let metadata = json!({"path":relative,"offset":self.offset,"bytes_returned":self.content.len(),"file_bytes":self.file_bytes,
+        let sha256 =
+            (self.eof && self.offset == 0).then(|| crate::file_edit::sha256(&self.content));
+        let metadata = json!({"path":relative,"offset":self.offset,"bytes_returned":self.content.len(),"file_bytes":self.file_bytes,"sha256":sha256,
             "eof":self.eof,"next_offset":if self.eof {None} else {Some(self.next_offset)}});
         let next = if self.eof {
             String::new()
@@ -112,7 +109,6 @@ pub fn read(root: &Path, relative: &str, args: &Value, budget: usize) -> Result<
         next_offset: offset.saturating_add(end as u64),
         file_bytes: metadata.len(),
         eof: bytes.len() == end,
-        explicit_range: args.get("offset").is_some_and(|v| !v.is_null()) || requested.is_some(),
     })
 }
 
@@ -143,23 +139,29 @@ mod tests {
         let result = page.result("large.rs");
         assert!(result.contains("next_offset"));
         assert!(result.contains("successful partial read"));
+        assert!(result.contains("\"sha256\":null"));
     }
 
     #[test]
-    fn small_legacy_reads_eof_explicit_ranges_and_long_lines_are_supported() {
+    fn small_reads_report_full_file_digests_and_keep_eof_ranges_and_long_lines() {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("small.txt"), "Hej 👋").unwrap();
-        assert_eq!(
-            read(
-                root.path(),
-                "small.txt",
-                &json!({"offset":null,"max_bytes":null}),
-                1024
-            )
+        let result = read(
+            root.path(),
+            "small.txt",
+            &json!({"offset":null,"max_bytes":null}),
+            1024,
+        )
+        .unwrap()
+        .result("small.txt");
+        let (metadata, content) = result
+            .strip_prefix("[read_file ")
             .unwrap()
-            .result("small.txt"),
-            "Hej 👋"
-        );
+            .split_once("]\n")
+            .unwrap();
+        let metadata: Value = serde_json::from_str(metadata).unwrap();
+        assert_eq!(content, "Hej 👋");
+        assert_eq!(metadata["sha256"], crate::file_edit::sha256(content));
         let page = read(
             root.path(),
             "small.txt",

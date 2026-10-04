@@ -20,6 +20,14 @@ pub struct Probe {
 }
 
 impl Probe {
+    pub fn cancel(&mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
+        self.receive = None;
+        self.result = None;
+    }
+
     pub fn poll(&mut self, ctx: &egui::Context, interval: Duration) {
         let Some(receive) = &self.receive else {
             return;
@@ -47,6 +55,7 @@ impl Probe {
         settings: &mut Settings,
         root: PathBuf,
         runtime: &tokio::runtime::Runtime,
+        project_trusted: bool,
     ) {
         prefs::card(ui, "mcp", |ui| {
             prefs::heading(
@@ -102,6 +111,7 @@ impl Probe {
                 settings.tools_enabled,
                 settings.commands_enabled,
                 settings.command_mode,
+                project_trusted,
                 root
             ])
             .to_string();
@@ -116,6 +126,7 @@ impl Probe {
             ui.horizontal(|ui| {
                 ui.add_enabled_ui(
                     valid
+                        && project_trusted
                         && settings.tools_enabled
                         && settings.mcp_enabled
                         && self.receive.is_none(),
@@ -137,6 +148,12 @@ impl Probe {
                     },
                 );
             });
+            if !project_trusted {
+                prefs::help(
+                    ui,
+                    "Acknowledge Project host access above before testing MCP servers.",
+                );
+            }
             prefs::help(
                 ui,
                 "Test starts enabled local servers and lists tools, but does not invoke tools. No project config is auto-loaded.",
@@ -212,7 +229,7 @@ mod tests {
             },
             |ui| {
                 prefs::style(ui);
-                probe.show(ui, settings, root.into(), runtime);
+                probe.show(ui, settings, root.into(), runtime, true);
             },
         );
         output.textures_delta.clear();
@@ -372,5 +389,45 @@ mod tests {
         assert!(probe.result.is_none());
         assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text.starts_with("Invalid MCP configuration"))));
         assert!(server.requests.try_recv().is_err());
+    }
+
+    #[test]
+    fn untrusted_projects_cannot_start_mcp_discovery() {
+        let runtime = crate::lifecycle::TaskRuntime::new();
+        let root = tempfile::tempdir().unwrap();
+        let ctx = egui::Context::default();
+        theme::install(&ctx, 15.0, true);
+        let mut probe = Probe::default();
+        let mut settings = Settings { mcp_enabled: true, mcp_config: serde_json::json!({"mcpServers":{"fixture":{"command":"sh","args":["-c","touch unexpected-server-start"]}}}).to_string(), ..Default::default() };
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(340.0, 1400.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                prefs::style(ui);
+                probe.show(ui, &mut settings, root.path().into(), &runtime, false);
+            },
+        );
+        output.textures_delta.clear();
+        let test = text_center(&output, "Test MCP servers");
+        for pressed in [true, false] {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    events: click(test, pressed),
+                    ..Default::default()
+                },
+                |ui| {
+                    prefs::style(ui);
+                    probe.show(ui, &mut settings, root.path().into(), &runtime, false);
+                },
+            );
+            output.textures_delta.clear();
+        }
+        assert!(probe.task.is_none() && probe.receive.is_none());
+        assert!(!root.path().join("unexpected-server-start").exists());
     }
 }

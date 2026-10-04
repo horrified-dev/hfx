@@ -97,7 +97,7 @@ Configuration is saved with settings, including an unfinished/invalid editor dra
 - Connections belong to one task. Completion, errors, or Stop close them; local processes are terminated (their process group on Unix, the direct child on Windows). Tool timeouts close the affected connection and do not automatically retry calls. **Remote operations may still finish after cancellation**; check the outcome before retrying an action with side effects.
 - An enabled server that fails initialization/discovery stops the task before the first model request. Fix it or set that server's `enabled` to `false`; hfx does not silently continue with missing tools.
 
-Limits: 16 configured servers, 64 KiB configuration, 119 enabled MCP tools in total (leaving room for nine native tools within the providers' 128-tool limit), and 256 KiB tool arguments. Server/tool schemas are subject to the model endpoint's own compatibility requirements.
+Limits: 16 configured servers, 64 KiB configuration, 118 enabled MCP tools in total (leaving room for ten native tools within the providers' 128-tool limit), and 256 KiB tool arguments. Server/tool schemas are subject to the model endpoint's own compatibility requirements.
 
 ## Security and current scope
 

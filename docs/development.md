@@ -24,6 +24,8 @@ The tests cover:
 - **Images and UI:** Markdown link rendering, wrapped/Unicode link hit regions, click/keyboard activation, text-selection safety, hfx monogram reuse, image tool round trips, image-only replies, saved image context, keyboard handling, project/rename validation, chronological tool groups, independent disclosures, icon alignment, and layouts at two window sizes.
 - **Lifecycle and desktop integration:** background saves with large histories, hidden-window logic, question timeouts, bounded event draining, Linux nonblocking VSync, localized launcher paths and ownership, installer updates, data-preserving uninstall, completion-alert batching and helper timeouts, final-save fences, bounded cleanup, atomic PNG export, and Git attribution settings/instructions.
 
+[Rust quality CI](../.github/workflows/checks.yml) enforces these checks on Linux for both Rust 1.95 (the minimum supported version) and stable. It provisions bubblewrap 0.12 for the actual sandbox regression tests and runs Linux/macOS installer filesystem fixtures. The separate native macOS workflow still validates the macOS release bundle. No quality checks are skipped because of a missing sandbox runner.
+
 Auth and provider tests use local Rust HTTP fixtures; they perform no real sign-in or model requests.
 
 Linux installer integration checks require a release build:
@@ -79,7 +81,7 @@ cargo run --locked -- --preview=images
 cargo run --locked -- --preview=image-viewer
 ```
 
-Other previews: `markdown`, `reasoning`, `appearance`, `tools`, `menu`, `codex`, `openrouter`, and `git-attribution`. The [Markdown preview](../artifacts/markdown-preview.png) demonstrates commit links, formatted labels, and literal code.
+Other previews: `trust`, `recovery`, `edit-approval`, `markdown`, `reasoning`, `appearance`, `tools`, `menu`, `codex`, `openrouter`, and `git-attribution`. The [Markdown preview](../artifacts/markdown-preview.png) demonstrates commit links, formatted labels, and literal code.
 
 ### Refresh README screenshots
 
@@ -130,10 +132,20 @@ cargo test --locked demo_blender_mcp -- --ignored --nocapture
 
 ## Source map
 
-- [`src/app.rs`](../src/app.rs): native shell, panels, conversation, settings, approvals, lifecycle.
+- [`src/app.rs`](../src/app.rs): native shell, shared harness state, project navigation, and lifecycle hooks.
+- [`src/app/turns.rs`](../src/app/turns.rs): queue/steering coordination and bounded event polling.
+- [`src/app/conversation.rs`](../src/app/conversation.rs): conversation, action history and diff rendering.
+- [`src/app/composer.rs`](../src/app/composer.rs): composer and queued-message controls.
+- [`src/app/attachments_ui.rs`](../src/app/attachments_ui.rs): attachment input, thumbnails and image viewer.
+- [`src/app/settings.rs`](../src/app/settings.rs): provider, tool, appearance and auth settings.
+- [`src/app/dialogs.rs`](../src/app/dialogs.rs): project, rename, queue-edit and tool-approval dialogs.
+- [`src/app/safety.rs`](../src/app/safety.rs): explicit recovery and project-trust UI.
+- [`src/app/previews.rs`](../src/app/previews.rs), [`src/app/tests.rs`](../src/app/tests.rs): isolated scripted previews and headless GUI regression tests.
 - [`src/backend.rs`](../src/backend.rs): async streaming adapters, SSE decoder, agent loop, connection probing.
 - [`src/codex.rs`](../src/codex.rs): direct OpenAI OAuth, PKCE callback, private login cache, token refresh, and model discovery.
 - [`src/context.rs`](../src/context.rs): token estimates, model context limits, compaction planning, and checkpoints.
+- [`src/file_edit.rs`](../src/file_edit.rs): bounded precise text editing, full-file digests, stale-content checks and atomic replacement.
+- [`src/recovery.rs`](../src/recovery.rs): startup load handling and explicit private history backups.
 - [`src/file_read.rs`](../src/file_read.rs): context-budgeted UTF-8 file paging and continuation metadata.
 - [`src/tools.rs`](../src/tools.rs): workspace path checks, file tools, command execution and captured output.
 - [`src/sandbox.rs`](../src/sandbox.rs): trusted host command setup and optional Linux confinement/private Cargo cache overlays.

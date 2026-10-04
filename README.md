@@ -73,6 +73,8 @@ The [provider setup guide](docs/providers.md) covers authentication, endpoints, 
 
 > **Commands run on your host by default.** They execute as your normal user, inherit your Git/SSH setup and environment, and can access credentials or change files outside the project. Trusted mode is **not** a filesystem or secret-isolation boundary. Use it only with code you trust.
 
+Before the first host-tool run in each project, hfx requires an explicit **project trust acknowledgement**. Existing projects also start untrusted after upgrading. The dialog offers trusted host access, strict sandboxing, or disabling shell commands and MCP; it never times out into approval. Trust can be revoked in **Settings → Tools → Project host access**.
+
 In **Settings → Tools**, enable **Review each tool action** for approvals or choose **Strict workspace sandbox** for command confinement on Linux. Strict mode requires **bubblewrap 0.12 or later**, user namespaces, and overlay filesystem support; missing support produces an error rather than falling back to trusted access. File and image tools always enforce workspace-relative paths.
 
 Chats and file context are saved locally in **plaintext**. API keys entered in settings stay in memory and are not serialized; Codex OAuth credentials are stored in a separate private-permission plaintext cache. See [Tools & security](docs/tools.md) and [Motion and persistence](docs/usage.md#motion-and-persistence) before working with sensitive data.

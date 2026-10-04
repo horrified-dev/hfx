@@ -374,13 +374,13 @@ async fn fetch(url: &str) -> Result<ToolOutput, String> {
                 .trim_start()
                 .to_lowercase()
                 .starts_with("<!doctype html"));
-    if !html
-        && !media.is_empty()
-        && !(media.starts_with("text/")
-            || media == "application/json"
-            || media.ends_with("+json")
-            || media == "application/xml"
-            || media.ends_with("+xml"))
+    if !(html
+        || media.is_empty()
+        || media.starts_with("text/")
+        || media == "application/json"
+        || media.ends_with("+json")
+        || media == "application/xml"
+        || media.ends_with("+xml"))
     {
         return Err(format!(
             "web_fetch supports HTML and text/JSON/XML, not {media}. It is not a binary download or browser tool."

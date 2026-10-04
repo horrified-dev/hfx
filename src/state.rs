@@ -170,6 +170,12 @@ impl Default for Settings {
 }
 
 impl Settings {
+    pub fn requires_project_trust(&self) -> bool {
+        self.tools_enabled
+            && self.command_mode == CommandMode::Trusted
+            && (self.commands_enabled || self.mcp_enabled)
+    }
+
     pub fn command_timeout(&self) -> u64 {
         self.command_timeout_secs.clamp(30, 7200)
     }
@@ -316,9 +322,38 @@ pub struct Project {
     pub id: Uuid,
     pub name: String,
     pub path: String,
+    #[serde(default)]
+    pub trusted_path: Option<String>,
 }
 
 impl Project {
+    pub fn workspace(&self) -> Result<std::path::PathBuf, String> {
+        let path = std::path::Path::new(&self.path)
+            .canonicalize()
+            .map_err(|e| format!("Project is unavailable: {e}"))?;
+        if !path.is_dir() {
+            return Err("Choose a project directory.".into());
+        }
+        Ok(path)
+    }
+
+    pub fn trusts_workspace(&self, path: &std::path::Path) -> bool {
+        self.trusted_path
+            .as_ref()
+            .is_some_and(|trusted| path == std::path::Path::new(trusted))
+    }
+
+    pub fn is_trusted(&self) -> bool {
+        self.workspace()
+            .is_ok_and(|path| self.trusts_workspace(&path))
+    }
+
+    pub fn trust(&mut self) -> Result<(), String> {
+        let path = self.workspace()?;
+        self.trusted_path = Some(path.to_string_lossy().into_owned());
+        Ok(())
+    }
+
     pub fn from_path(path: String) -> Self {
         let name = std::path::Path::new(&path)
             .file_name()
@@ -329,6 +364,7 @@ impl Project {
             id: Uuid::new_v4(),
             name,
             path,
+            trusted_path: None,
         }
     }
 }
@@ -1189,5 +1225,66 @@ mod tests {
         saved.restore();
         assert_eq!(saved.selected, saved.chats[0].id);
         assert_eq!(saved.chats[0].messages[0].status, Status::Cancelled);
+    }
+}
+
+#[cfg(test)]
+mod trust_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_and_new_projects_require_explicit_canonical_path_trust() {
+        let root = tempfile::tempdir().unwrap();
+        let mut project = Project::from_path(root.path().display().to_string());
+        assert!(!project.is_trusted());
+        let mut old = serde_json::to_value(&project).unwrap();
+        old.as_object_mut().unwrap().remove("trusted_path");
+        let legacy: Project = serde_json::from_value(old).unwrap();
+        assert!(!legacy.is_trusted());
+        project.trust().unwrap();
+        assert!(project.is_trusted());
+        let restored: Project =
+            serde_json::from_str(&serde_json::to_string(&project).unwrap()).unwrap();
+        assert!(restored.is_trusted());
+        let other = tempfile::tempdir().unwrap();
+        project.path = other.path().display().to_string();
+        assert!(!project.is_trusted());
+        project.trusted_path = None;
+        assert!(!project.is_trusted());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn retargeting_a_project_symlink_does_not_carry_trust_to_another_directory() {
+        let parent = tempfile::tempdir().unwrap();
+        let first = parent.path().join("first");
+        let second = parent.path().join("second");
+        let link = parent.path().join("project");
+        std::fs::create_dir(&first).unwrap();
+        std::fs::create_dir(&second).unwrap();
+        std::os::unix::fs::symlink(&first, &link).unwrap();
+        let mut project = Project::from_path(link.display().to_string());
+        project.trust().unwrap();
+        assert!(project.is_trusted());
+        std::fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink(&second, &link).unwrap();
+        assert!(!project.is_trusted());
+    }
+
+    #[test]
+    fn host_trust_is_required_even_in_review_mode_but_not_for_confined_or_disabled_tools() {
+        let mut settings = Settings::default();
+        assert!(settings.requires_project_trust());
+        settings.review_actions = true;
+        assert!(settings.requires_project_trust());
+        settings.commands_enabled = false;
+        assert!(!settings.requires_project_trust());
+        settings.mcp_enabled = true;
+        assert!(settings.requires_project_trust());
+        settings.command_mode = CommandMode::Sandbox;
+        assert!(!settings.requires_project_trust());
+        settings.command_mode = CommandMode::Trusted;
+        settings.tools_enabled = false;
+        assert!(!settings.requires_project_trust());
     }
 }
