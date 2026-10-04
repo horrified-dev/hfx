@@ -1,6 +1,6 @@
 /// A UTF-8-safe reveal cursor. Network chunks can arrive in bursts; the view
 /// catches up at a bounded speed instead of adding a whole paragraph at once.
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 pub struct Reveal {
     shown: usize,
     credit: f32,

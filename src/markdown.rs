@@ -4,6 +4,9 @@ use std::ops::Range;
 
 use eframe::egui::{self, Color32, FontId, Pos2, Rect, Sense, Stroke, Ui};
 
+#[path = "markdown_cache.rs"]
+mod parse_cache;
+
 use crate::theme::{self, ACCENT, CODE, LINE, MUTED, RAIL, SURFACE, TEXT};
 
 #[derive(Debug)]
@@ -267,8 +270,24 @@ fn link_rects(galley: &egui::Galley, pos: Pos2, characters: &Range<usize>) -> Ve
 }
 
 fn inline_label(ui: &mut Ui, text: &str, size: f32, color: Color32, strong: bool) {
-    let inline = inline_text(text, size, color, strong);
-    let (pos, galley, response) = egui::Label::new(inline.job)
+    // Cache parsing only. Native label layout still refreshes wrapping, glyphs,
+    // and widget geometry for every width/font/DPI change.
+    let inline = ui.ctx().memory_mut(|memory| {
+        memory
+            .caches
+            .cache::<parse_cache::InlineCache>()
+            .get(text, size, color, strong)
+    });
+    match std::sync::Arc::try_unwrap(inline) {
+        // Uncached oversized/overflow lines retain the original owned path,
+        // rather than cloning their potentially large text just to draw it.
+        Ok(inline) => paint_inline(ui, inline.job, &inline.links, color),
+        Err(inline) => paint_inline(ui, inline.job.clone(), &inline.links, color),
+    }
+}
+
+fn paint_inline(ui: &mut Ui, job: egui::text::LayoutJob, links: &[InlineLink], color: Color32) {
+    let (pos, galley, response) = egui::Label::new(job)
         .wrap()
         .selectable(true)
         .layout_in_ui(ui);
@@ -286,7 +305,7 @@ fn inline_label(ui: &mut Ui, text: &str, size: f32, color: Color32, strong: bool
         color,
         Stroke::NONE,
     );
-    for (link_index, link) in inline.links.iter().enumerate() {
+    for (link_index, link) in links.iter().enumerate() {
         for (row_index, rect) in link_rects(&galley, pos, &link.characters)
             .into_iter()
             .enumerate()
@@ -391,6 +410,10 @@ fn code_block(ui: &mut Ui, language: &str, body: &str) {
                 });
         });
 }
+
+#[cfg(test)]
+#[path = "markdown_performance_tests.rs"]
+mod performance_tests;
 
 #[cfg(test)]
 mod tests {
@@ -508,6 +531,18 @@ mod tests {
         time: f64,
         events: Vec<Event>,
     ) -> egui::FullOutput {
+        draw_styled(ctx, text, width, 14.0, TEXT, time, events)
+    }
+
+    fn draw_styled(
+        ctx: &egui::Context,
+        text: &str,
+        width: f32,
+        size: f32,
+        color: Color32,
+        time: f64,
+        events: Vec<Event>,
+    ) -> egui::FullOutput {
         let mut output = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(width, 400.0))),
@@ -517,7 +552,7 @@ mod tests {
             },
             |ui| {
                 ui.set_max_width(width);
-                show(ui, text, 14.0, TEXT);
+                show(ui, text, size, color);
             },
         );
         output.textures_delta.clear();
@@ -664,6 +699,129 @@ mod tests {
         let output = draw(&ctx, text, 440.0, 0.2, vec![key(egui::Key::Enter)]);
         assert_eq!(opened(&output).len(), 1);
         assert_eq!(opened(&output)[0].url, "https://example.com/docs");
+    }
+
+    #[test]
+    fn cached_markdown_relayouts_for_resize_zoom_font_size_and_font_definitions() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx, 14.0, true);
+        let text = "iiiiii WWWWWW café **bold** and [long label](https://example.com/docs)";
+        let expected = inline_text(text, 14.0, TEXT, false).job.text;
+        let first = text_shape(&draw(&ctx, text, 700.0, 0.0, vec![]), &expected);
+        let parsed = ctx.memory_mut(|memory| {
+            memory
+                .caches
+                .cache::<parse_cache::InlineCache>()
+                .get(text, 14.0, TEXT, false)
+        });
+        let narrow = text_shape(&draw(&ctx, text, 110.0, 0.1, vec![]), &expected);
+        assert!(narrow.galley.rows.len() > first.galley.rows.len());
+        assert!(narrow.galley.size().x <= 110.0);
+        let still_parsed = ctx.memory_mut(|memory| {
+            memory
+                .caches
+                .cache::<parse_cache::InlineCache>()
+                .get(text, 14.0, TEXT, false)
+        });
+        assert!(std::sync::Arc::ptr_eq(&parsed, &still_parsed));
+
+        let before_zoom = text_shape(&draw(&ctx, text, 700.0, 0.2, vec![]), &expected);
+        ctx.set_pixels_per_point(2.0);
+        let zoomed = text_shape(&draw(&ctx, text, 700.0, 0.3, vec![]), &expected);
+        assert!(!std::sync::Arc::ptr_eq(&before_zoom.galley, &zoomed.galley));
+        let still_parsed = ctx.memory_mut(|memory| {
+            memory
+                .caches
+                .cache::<parse_cache::InlineCache>()
+                .get(text, 14.0, TEXT, false)
+        });
+        assert!(std::sync::Arc::ptr_eq(&parsed, &still_parsed));
+
+        let mut fonts = egui::FontDefinitions::default();
+        fonts.families.insert(
+            FontFamily::Proportional,
+            fonts.families[&FontFamily::Monospace].clone(),
+        );
+        ctx.set_fonts(fonts);
+        let changed_fonts = text_shape(&draw(&ctx, text, 700.0, 0.4, vec![]), &expected);
+        assert_ne!(changed_fonts.galley.size().x, zoomed.galley.size().x);
+        let still_parsed = ctx.memory_mut(|memory| {
+            memory
+                .caches
+                .cache::<parse_cache::InlineCache>()
+                .get(text, 14.0, TEXT, false)
+        });
+        assert!(std::sync::Arc::ptr_eq(&parsed, &still_parsed));
+
+        let larger = text_shape(
+            &draw_styled(&ctx, text, 700.0, 24.0, MUTED, 0.5, vec![]),
+            &expected,
+        );
+        assert!(larger.galley.size().y > changed_fonts.galley.size().y);
+        assert_eq!(larger.galley.job.sections[0].format.font_id.size, 24.0);
+        assert_eq!(larger.galley.job.sections[0].format.color, MUTED);
+    }
+
+    #[test]
+    fn cached_links_recompute_click_geometry_after_resize_and_zoom() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx, 14.0, true);
+        let text = "Before [日本語 café long linked label](https://example.com/docs) after";
+        let parsed = inline_text(text, 14.0, TEXT, false);
+        for (index, (width, scale)) in [(440.0, 1.0), (90.0, 2.0), (170.0, 1.5)]
+            .into_iter()
+            .enumerate()
+        {
+            ctx.set_pixels_per_point(scale);
+            let time = index as f64;
+            let output = draw(&ctx, text, width, time, vec![]);
+            let shape = text_shape(&output, &parsed.job.text);
+            let rects = link_rects(&shape.galley, shape.pos, &parsed.links[0].characters);
+            assert!(!rects.is_empty());
+            if width == 90.0 {
+                assert!(rects.len() > 1);
+            }
+            for (row, rect) in rects.iter().enumerate() {
+                let time = time + 0.1 + row as f64 * 0.1;
+                draw(&ctx, text, width, time, pointer(rect.center(), true));
+                let clicked = draw(
+                    &ctx,
+                    text,
+                    width,
+                    time + 0.05,
+                    pointer(rect.center(), false),
+                );
+                assert_eq!(opened(&clicked).len(), 1);
+                assert_eq!(opened(&clicked)[0].url, "https://example.com/docs");
+            }
+        }
+    }
+
+    #[test]
+    fn cached_markdown_warm_frames_preserve_text_geometry_and_formatting() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx, 14.0, true);
+        let text = "## Heading café\n**Bold** and `code`, plus [docs](https://example.com/docs)\nJapanese 日本語";
+        let snapshot = |output: egui::FullOutput| {
+            output
+                .shapes
+                .into_iter()
+                .filter_map(|shape| match shape.shape {
+                    egui::Shape::Text(shape) => {
+                        Some((shape.pos, shape.galley.size(), shape.galley.job.clone()))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let cold = snapshot(draw(&ctx, text, 440.0, 0.0, vec![]));
+        assert!(!cold.is_empty());
+        for frame in 1..5 {
+            assert_eq!(
+                snapshot(draw(&ctx, text, 440.0, frame as f64, vec![])),
+                cold
+            );
+        }
     }
 
     #[test]

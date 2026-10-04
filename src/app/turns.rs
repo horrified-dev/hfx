@@ -270,6 +270,9 @@ impl Harness {
                 std::sync::Arc::make_mut(&mut message.reasoning_details).extend(details)
             }
             Event::ResponsesContext(items) => message.response_items = items.into(),
+            Event::ResponsesContextAppend(items) => {
+                std::sync::Arc::make_mut(&mut message.response_items).extend(items);
+            }
             Event::Usage(n) => message.tokens += n,
             Event::ModelTime(seconds) => message.model_seconds += seconds,
             Event::ContextUsage {

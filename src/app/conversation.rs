@@ -391,6 +391,21 @@ impl Harness {
         self.saved.chats[index].messages = messages;
     }
 
+    /// Copy only the tiny cursors; rendered text continues to borrow the saved
+    /// message, including reasoning that may be hidden or collapsed this frame.
+    pub(super) fn reply_text<'a>(&self, message: &'a Message) -> (&'a str, &'a str) {
+        self.reveals
+            .get(&message.id)
+            .copied()
+            .map(|(answer, reasoning)| {
+                (
+                    answer.visible(&message.text),
+                    reasoning.visible(&message.reasoning),
+                )
+            })
+            .unwrap_or((&message.text, &message.reasoning))
+    }
+
     pub(super) fn message(&mut self, ui: &mut Ui, message: &Message, now: f64) {
         let alpha = if self.saved.settings.reduced_motion || message.born == 0.0 {
             1.0
@@ -398,16 +413,7 @@ impl Harness {
             motion::ease(((now - message.born) / 0.3) as f32)
         };
         ui.set_opacity(ui.opacity() * alpha);
-        let (answer, reasoning) = self
-            .reveals
-            .get(&message.id)
-            .map(|(a, r)| {
-                (
-                    a.visible(&message.text).to_owned(),
-                    r.visible(&message.reasoning).to_owned(),
-                )
-            })
-            .unwrap_or_else(|| (message.text.clone(), message.reasoning.clone()));
+        let (answer, reasoning) = self.reply_text(message);
         if message.user {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("YOU").size(10.0).color(theme::DIM));
@@ -420,7 +426,7 @@ impl Harness {
                 .show(ui, |ui| {
                     ui.set_min_width((ui.available_width() - 1.0).max(0.0));
                     self.attachment_strip(ui, &message.attachments, false);
-                    theme::markdown(ui, &answer, self.saved.settings.font_size, theme::TEXT);
+                    theme::markdown(ui, answer, self.saved.settings.font_size, theme::TEXT);
                 });
             return;
         }
@@ -469,7 +475,7 @@ impl Harness {
                                     .color(theme::MUTED),
                             );
                         } else {
-                            theme::markdown(ui, &reasoning, 13.0, theme::MUTED);
+                            theme::markdown(ui, reasoning, 13.0, theme::MUTED);
                         }
                     });
                 });
@@ -510,7 +516,7 @@ impl Harness {
                 ui.add_space(12.0);
             }
             if !answer.is_empty() {
-                theme::markdown(ui, &answer, self.saved.settings.font_size, theme::TEXT);
+                theme::markdown(ui, answer, self.saved.settings.font_size, theme::TEXT);
             }
             self.attachment_strip(ui, &message.attachments, false);
         }

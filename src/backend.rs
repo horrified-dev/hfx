@@ -8,11 +8,20 @@ use serde_json::{Value, json};
 use std::{collections::BTreeMap, path::PathBuf, sync::mpsc::Sender, time::Duration};
 use tokio::sync::oneshot;
 
+#[path = "backend_request.rs"]
+mod request_body;
+#[path = "backend_stream.rs"]
+mod stream_events;
+use stream_events::{StreamBatch, StreamSink};
+
 pub enum Event {
     Text(String),
     Reasoning(String),
     ReasoningDetails(Vec<Value>),
+    /// Replace a reply's entire wire suffix (final answer, steering, or reset).
     ResponsesContext(Vec<Value>),
+    /// Append a completed tool round without republishing its earlier prefix.
+    ResponsesContextAppend(Vec<Value>),
     Usage(u64),
     /// Time in provider requests (network and model generation), not tool I/O.
     ModelTime(f32),
@@ -235,7 +244,7 @@ impl Turn {
             .or_else(|| event["output_index"].as_u64().map(|i| i as usize))
     }
 
-    fn finish_output(&mut self, tx: &Sender<Event>) {
+    fn finish_output(&mut self, tx: &impl StreamSink) {
         self.output = self.output_items.values().cloned().collect();
         for item in &mut self.output {
             if item["type"] == "function_call" && item.get("status").is_some() {
@@ -362,7 +371,7 @@ fn parse_event(
     provider: Provider,
     data: &str,
     turn: &mut Turn,
-    tx: &Sender<Event>,
+    tx: &impl StreamSink,
 ) -> Result<(), String> {
     if data.trim() == "[DONE]" {
         // A transport sentinel is not a successful model completion. In
@@ -589,6 +598,23 @@ fn parse_event(
     Ok(())
 }
 
+/// Each batch ends synchronously before another network await. First tokens,
+/// control-event order, and partial output on errors retain their old semantics.
+fn parse_stream_events(
+    provider: Provider,
+    events: Vec<String>,
+    turn: &mut Turn,
+    tx: &Sender<Event>,
+) -> Result<bool, String> {
+    let batch = StreamBatch::new(tx, !turn.text.is_empty(), !turn.reasoning.is_empty());
+    let mut done = false;
+    for event in events {
+        done |= event.trim() == "[DONE]";
+        parse_event(provider, &event, turn, &batch)?;
+    }
+    Ok(done)
+}
+
 fn client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -750,7 +776,7 @@ fn accept_steering(
     if messages.is_empty() {
         return Ok(false);
     }
-    tx.send(Event::ResponsesContext(wire.clone()))
+    tx.send(Event::ResponsesContext(std::mem::take(wire)))
         .map_err(|_| "Window closed")?;
     for message in &messages {
         let items = history_items(message, settings.provider);
@@ -758,9 +784,8 @@ fn accept_steering(
         *measured = measured.map(|usage| usage.with_growth(growth));
         history.extend(items);
     }
-    // The old suffix belongs to the sealed assistant message. New output must not
-    // replay that suffix again after the visible steering message on future turns.
-    wire.clear();
+    // The old suffix was moved into the sealed assistant message. New output
+    // must not replay it after the visible steering message on future turns.
     tx.send(Event::Steered(messages))
         .map_err(|_| "Window closed")?;
     Ok(true)
@@ -981,33 +1006,13 @@ async fn agent(
             returned_images = 0;
             continue;
         }
-        let mut body = if openai {
-            let mut reasoning = json!({"effort":settings.effort});
-            if settings.show_reasoning {
-                reasoning["summary"] = json!("auto");
-            }
-            json!({"model":settings.model(),"instructions":instructions,"input":history,"stream":true,"store":false,
-                "reasoning":reasoning,"include":["reasoning.encrypted_content"],"max_output_tokens":output_reserve(&settings)})
-        } else if settings.provider == Provider::OpenRouter {
-            json!({"model":settings.model(),"messages":with_system(&history, &instructions),"stream":true,"stream_options":{"include_usage":true},
-                "reasoning":{"effort":settings.effort,"exclude":!settings.show_reasoning},
-                "max_tokens":output_reserve(&settings),"temperature":settings.temperature})
-        } else {
-            json!({"model":settings.model(),"messages":with_system(&history, &instructions),"stream":true,"stream_options":{"include_usage":true},
-                "reasoning_format":"deepseek","reasoning_effort":settings.effort,
-                "max_tokens":output_reserve(&settings),"temperature":settings.temperature})
-        };
-        if settings.tools_enabled {
-            body["tools"] = json!(tool_definitions);
-        }
-        if codex {
-            body.as_object_mut()
-                .expect("Request body")
-                .remove("max_output_tokens");
-            body["prompt_cache_key"] = json!(request.session);
-            body["tool_choice"] = json!("auto");
-            body["parallel_tool_calls"] = json!(true);
-        }
+        let body = request_body::RequestBody::new(
+            &settings,
+            &instructions,
+            &history,
+            &tool_definitions,
+            &request.session,
+        );
         let model_timer = ModelTimer::new(tx);
         let mut retry = false;
         let response = loop {
@@ -1068,11 +1073,8 @@ async fn agent(
                 }
                 Err(error) => return Err(format!("Stream disconnected: {error}")),
             };
-            let mut done = false;
-            for event in decoder.push(&chunk)? {
-                done |= event.trim() == "[DONE]";
-                parse_event(settings.provider, &event, &mut turn, tx)?;
-            }
+            let done =
+                parse_stream_events(settings.provider, decoder.push(&chunk)?, &mut turn, tx)?;
             if done || (openai && turn.terminal) {
                 break;
             }
@@ -1081,9 +1083,7 @@ async fn agent(
             }
         }
         if !trailer_expired {
-            for event in decoder.finish()? {
-                parse_event(settings.provider, &event, &mut turn, tx)?;
-            }
+            parse_stream_events(settings.provider, decoder.finish()?, &mut turn, tx)?;
         }
         if !turn.terminal {
             return Err(
@@ -1106,6 +1106,7 @@ async fn agent(
             returned_images += 1;
         }
         let request_estimate = context::estimate_items(&history);
+        let context_start = context.len();
         if openai {
             // Gateways may send text deltas but omit/empty the terminal message.
             // Steering continues in this same loop, so reconstruct it now rather
@@ -1245,12 +1246,21 @@ async fn agent(
         context.extend(image_context.clone());
         history.extend(image_context);
         // Keep completed tool rounds even if a later request fails or is stopped.
-        let _ = tx.send(Event::ResponsesContext(context.clone()));
+        publish_tool_context(tx, &context, context_start);
         let growth = context::estimate_items(&history).saturating_sub(tool_start_estimate);
         measured = measured.map(|usage| usage.with_growth(growth));
         if !turn.text.is_empty() {
             let _ = tx.send(Event::Text("\n\n".into()));
         }
+    }
+}
+
+/// Publish only this round's suffix. Earlier rounds already belong to the UI's
+/// copy-on-write saved context, including when the next request fails or stops.
+fn publish_tool_context(tx: &Sender<Event>, context: &[Value], start: usize) {
+    let items = &context[start..];
+    if !items.is_empty() {
+        let _ = tx.send(Event::ResponsesContextAppend(items.to_vec()));
     }
 }
 
@@ -1468,11 +1478,12 @@ async fn summarize(
             .map_err(|_| "Summary timed out after 120 seconds")?
         {
             let chunk = chunk.map_err(|e| format!("Summary stream disconnected: {e}"))?;
-            let mut done = false;
-            for event in decoder.push(&chunk)? {
-                done |= event.trim() == "[DONE]";
-                parse_event(settings.provider, &event, &mut turn, &private_tx)?;
-            }
+            let done = parse_stream_events(
+                settings.provider,
+                decoder.push(&chunk)?,
+                &mut turn,
+                &private_tx,
+            )?;
             if context::estimate(&json!(turn.text)) > output_limit * 2 {
                 return Err("The provider exceeded the summary budget".into());
             }
@@ -1480,9 +1491,7 @@ async fn summarize(
                 break;
             }
         }
-        for event in decoder.finish()? {
-            parse_event(settings.provider, &event, &mut turn, &private_tx)?;
-        }
+        parse_stream_events(settings.provider, decoder.finish()?, &mut turn, &private_tx)?;
         if !turn.terminal || turn.text.trim().is_empty() || !turn.calls.is_empty() {
             return Err("The provider did not return a complete text summary".into());
         }
@@ -4554,3 +4563,7 @@ mod safety_tests;
 #[cfg(test)]
 #[path = "backend_context_tests.rs"]
 mod context_tests;
+
+#[cfg(test)]
+#[path = "backend_performance_tests.rs"]
+mod performance_tests;

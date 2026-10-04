@@ -35,21 +35,38 @@ cargo build --release --locked
 python3 tests/linux_install.py target/release/hfx
 ```
 
-### Streaming and context microbenchmarks
+### Performance microbenchmarks
 
-Two ignored tests exercise the streaming decoder and compaction planner with
-synthetic inputs; they do not contact providers or read saved conversations:
+Ignored diagnostic tests use synthetic inputs; they do not contact providers or
+read saved conversations:
 
 ```bash
-cargo test --locked profile_sse_decoding -- --ignored --nocapture
-cargo test --locked profile_compaction_planning -- --ignored --nocapture
+cargo test --release --locked profile_sse_decoding -- --ignored --nocapture
+cargo test --release --locked profile_compaction_planning -- --ignored --nocapture
+cargo test --release --locked profile_large_history_budgeting -- --ignored --nocapture
+cargo test --release --locked profile_shutdown_save_io -- --ignored --nocapture
+cargo test --release --locked profile_hidden_reasoning_frames -- --ignored --nocapture
+cargo test --release --locked profile_tool_context_publishing -- --ignored --nocapture
+cargo test --release --locked profile_long_transcript_frames -- --ignored --nocapture
+cargo test --release --locked profile_distinct_markdown_lines -- --ignored --nocapture
+cargo test --release --locked profile_request_serialization -- --ignored --nocapture
+cargo test --release --locked profile_stream_event_batching -- --ignored --nocapture
+cargo test --release --locked profile_independent_tool_io -- --ignored --nocapture
 ```
 
-The decoder benchmark covers fragmented long lines, many events delivered in one
-chunk, and multiline events. The planner benchmark uses 3,001 messages. Compare
-runs on the same machine and build profile; add `--release` to both commands for
-optimized-build measurements. These are diagnostic microbenchmarks, not
-end-to-end latency claims or timing assertions in the normal test suite.
+The decoder covers fragmented long lines, coalesced short events, and multiline
+events. The planner uses 3,001 messages. Rendering and publication diagnostics
+exercise large hidden reasoning, growing tool context, and long Markdown histories.
+The distinct-line comparison tests bounded parsing-cache reuse and over-capacity
+fallback against the original owned rendering path in the same binary. Markdown
+regressions also cover live resize, zoom, font changes, streamed Unicode/unsafe URLs,
+cache lifetime/bounds, and preserved selection/link interactions.
+The follow-up diagnostics compare borrowed request serialization, within-chunk stream
+batching, and controlled local/HTTP tool I/O with preserved execution barriers.
+Compare runs on the same machine and build profile; the commands above use optimized
+builds. These are microbenchmarks, not end-to-end latency claims or timing assertions
+in the normal test suite. See [performance findings](performance.md) for measured
+before/after results and the next optimization targets.
 
 ### macOS installer checks
 
