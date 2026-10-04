@@ -5,6 +5,38 @@ use std::collections::HashSet;
 
 pub const COMPACT_PERCENT: u64 = 75;
 
+/// A provider count can anchor later estimates without re-tokenizing the old
+/// transcript. Any estimated growth must remain visibly approximate until the
+/// provider supplies a fresh usage report.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Usage {
+    pub tokens: u64,
+    pub estimated: bool,
+}
+
+impl Usage {
+    pub fn reported(tokens: u64) -> Self {
+        Self {
+            tokens,
+            estimated: false,
+        }
+    }
+
+    pub fn estimated(tokens: u64) -> Self {
+        Self {
+            tokens,
+            estimated: true,
+        }
+    }
+
+    pub fn with_growth(self, tokens: u64) -> Self {
+        Self {
+            tokens: self.tokens.saturating_add(tokens),
+            estimated: self.estimated || tokens > 0,
+        }
+    }
+}
+
 pub fn at_threshold(tokens: u64, limit: u64) -> bool {
     tokens.saturating_mul(100) >= limit.saturating_mul(COMPACT_PERCENT)
 }
@@ -196,6 +228,21 @@ pub fn chunks(text: &str, max_bytes: usize) -> Vec<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn usage_growth_preserves_provenance_and_saturates_without_overflow() {
+        let usage = Usage::reported(180_000);
+        assert_eq!(usage.with_growth(0), usage);
+        assert_eq!(usage.with_growth(100), Usage::estimated(180_100));
+        assert_eq!(
+            Usage::estimated(180_100).with_growth(0),
+            Usage::estimated(180_100)
+        );
+        assert_eq!(
+            Usage::reported(u64::MAX).with_growth(1),
+            Usage::estimated(u64::MAX)
+        );
+    }
 
     #[test]
     fn planning_chooses_the_earliest_affordable_safe_cut() {

@@ -11,6 +11,9 @@ mod edit_badge;
 #[path = "edit_badge_live_tests.rs"]
 mod edit_badge_live;
 
+#[path = "context_tests.rs"]
+mod context_regressions;
+
 fn draw(
     app: &mut Harness,
     ctx: &egui::Context,

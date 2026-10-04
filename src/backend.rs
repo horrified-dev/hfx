@@ -736,7 +736,7 @@ fn accept_steering(
     settings: &Settings,
     history: &mut Vec<Value>,
     wire: &mut Vec<Value>,
-    measured: &mut Option<u64>,
+    measured: &mut Option<context::Usage>,
 ) -> Result<bool, String> {
     let Some(receiver) = steering else {
         return Ok(false);
@@ -755,7 +755,7 @@ fn accept_steering(
     for message in &messages {
         let items = history_items(message, settings.provider);
         let growth = context::estimate_items(&items);
-        *measured = measured.map(|n| n.saturating_add(growth));
+        *measured = measured.map(|usage| usage.with_growth(growth));
         history.extend(items);
     }
     // The old suffix belongs to the sealed assistant message. New output must not
@@ -764,6 +764,47 @@ fn accept_steering(
     tx.send(Event::Steered(messages))
         .map_err(|_| "Window closed")?;
     Ok(true)
+}
+
+/// Recover only a same-connection provider report from this chat. Estimated
+/// turns contribute their actual replay items, not their old numeric estimates.
+/// Compaction or an intervening connection invalidates the older anchor.
+fn previous_context_usage(messages: &[Message], settings: &Settings) -> Option<context::Usage> {
+    let connection = settings.context_key();
+    let mut growth = 0u64;
+    for message in messages.iter().rev() {
+        if !message.user && !message.context_connection.is_empty() {
+            if message.context_connection != connection {
+                return None;
+            }
+            if !message.context_estimated {
+                return Some(context::Usage::reported(message.context_tokens).with_growth(growth));
+            }
+        }
+        if message
+            .context_checkpoint
+            .as_ref()
+            .is_some_and(|checkpoint| context::compatible(checkpoint, settings))
+        {
+            return None;
+        }
+        if !message.text.is_empty()
+            || !message.response_items.is_empty()
+            || !message.attachments.is_empty()
+            || !message.activities.is_empty()
+        {
+            // Legacy replies without usage still change the transcript; don't
+            // carry an older connection's measurement through such a reply.
+            if !message.user && message.provider != settings.provider.label() {
+                return None;
+            }
+            growth = growth.saturating_add(context::estimate_items(&history_items(
+                message,
+                settings.provider,
+            )));
+        }
+    }
+    None
 }
 
 async fn agent(
@@ -862,18 +903,7 @@ async fn agent(
     };
     let fixed_cost =
         context::estimate(&json!(instructions)) + context::estimate_items(&tool_definitions);
-    let mut measured = request
-        .history
-        .iter()
-        .rev()
-        .find(|m| !m.user && m.context_tokens > 0)
-        .filter(|m| m.context_connection == settings.context_key() && !m.context_estimated)
-        .map(|m| {
-            m.context_tokens
-                + request.history.last().filter(|m| m.user).map_or(0, |m| {
-                    context::estimate_items(&history_items(m, settings.provider))
-                })
-        });
+    let mut measured = previous_context_usage(&request.history, &settings);
     let mut returned_images = 0;
     loop {
         if accept_steering(
@@ -887,10 +917,11 @@ async fn agent(
             returned_images = 0;
         }
         let estimated = context::estimate_items(&history) + fixed_cost;
-        let used = measured.unwrap_or(estimated);
+        let usage = measured.unwrap_or_else(|| context::Usage::estimated(estimated));
+        let used = usage.tokens;
         let _ = tx.send(Event::ContextUsage {
             tokens: used,
-            estimated: measured.is_none(),
+            estimated: usage.estimated,
             connection: settings.context_key(),
         });
         if settings.auto_compact
@@ -1074,9 +1105,6 @@ async fn agent(
             let _ = tx.send(Event::Image(image));
             returned_images += 1;
         }
-        measured = turn
-            .input_tokens
-            .map(|n| n.saturating_add(turn.output_tokens));
         let request_estimate = context::estimate_items(&history);
         if openai {
             // Gateways may send text deltas but omit/empty the terminal message.
@@ -1095,18 +1123,28 @@ async fn agent(
             {
                 turn.output.push(json!({"type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":turn.text}]}));
             }
-            context.extend(turn.output.clone());
+            context.extend(turn.output.iter().cloned());
+            history.append(&mut turn.output);
+        } else {
+            let assistant = chat_assistant(&turn, settings.provider);
+            context.push(assistant.clone());
+            history.push(assistant);
         }
+        // Missing usage is not a reset: keep the last provider count and only
+        // estimate what was appended since that request. The wire suffix is
+        // already in history, so never add it (or the final text) a second time.
+        let growth = context::estimate_items(&history).saturating_sub(request_estimate);
+        measured = turn
+            .input_tokens
+            .map(|n| context::Usage::reported(n.saturating_add(turn.output_tokens)))
+            .or_else(|| measured.map(|usage| usage.with_growth(growth)));
         if turn.calls.is_empty() {
-            let tokens = measured.unwrap_or_else(|| {
-                request_estimate
-                    + fixed_cost
-                    + context::estimate_items(&context)
-                    + context::estimate(&json!(turn.text))
+            let usage = measured.unwrap_or_else(|| {
+                context::Usage::estimated(context::estimate_items(&history) + fixed_cost)
             });
             let _ = tx.send(Event::ContextUsage {
-                tokens,
-                estimated: measured.is_none(),
+                tokens: usage.tokens,
+                estimated: usage.estimated,
                 connection: settings.context_key(),
             });
             if turn.text.is_empty() && returned_images == 0 {
@@ -1122,13 +1160,6 @@ async fn agent(
                 let _ = tx.send(Event::ReasoningDetails(
                     turn.details.values().cloned().collect(),
                 ));
-            }
-            if openai {
-                history.extend(turn.output);
-            } else {
-                let assistant = chat_assistant(&turn, settings.provider);
-                context.push(assistant.clone());
-                history.push(assistant);
             }
             if accept_steering(
                 &mut steering,
@@ -1146,13 +1177,6 @@ async fn agent(
         }
         if !settings.tools_enabled {
             return Err("The server requested tools, but tools are disabled.".into());
-        }
-        if openai {
-            history.extend(turn.output);
-        } else {
-            let assistant = chat_assistant(&turn, settings.provider);
-            context.push(assistant.clone());
-            history.push(assistant);
         }
         let tool_start_estimate = context::estimate_items(&history);
         let mut image_context = Vec::new();
@@ -1174,7 +1198,8 @@ async fn agent(
             }
             // Reserve space for the next answer and page metadata, and share
             // the available context across all file reads in this turn.
-            let used = (context::estimate_items(&history) + fixed_cost).max(measured.unwrap_or(0));
+            let used = (context::estimate_items(&history) + fixed_cost)
+                .max(measured.map_or(0, |usage| usage.tokens));
             let available = limit.saturating_sub(
                 used.saturating_add(output_reserve(&settings))
                     .saturating_add(512u64.saturating_mul(remaining_reads as u64)),
@@ -1222,7 +1247,7 @@ async fn agent(
         // Keep completed tool rounds even if a later request fails or is stopped.
         let _ = tx.send(Event::ResponsesContext(context.clone()));
         let growth = context::estimate_items(&history).saturating_sub(tool_start_estimate);
-        measured = measured.map(|n| n.saturating_add(growth));
+        measured = measured.map(|usage| usage.with_growth(growth));
         if !turn.text.is_empty() {
             let _ = tx.send(Event::Text("\n\n".into()));
         }
@@ -4525,3 +4550,7 @@ mod mcp_tests;
 #[cfg(test)]
 #[path = "backend_safety_tests.rs"]
 mod safety_tests;
+
+#[cfg(test)]
+#[path = "backend_context_tests.rs"]
+mod context_tests;
