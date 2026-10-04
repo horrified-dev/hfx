@@ -1159,6 +1159,7 @@ fn export_headless_previews() {
         ("context-meter-hover", 1180, 820),
         ("welcome", 1180, 820),
         ("welcome", 1180, 600),
+        ("welcome", 720, 540),
         ("attachments", 1180, 820),
         ("question", 1180, 820),
         ("question", 720, 540),

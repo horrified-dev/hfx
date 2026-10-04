@@ -4,7 +4,7 @@ A native coding harness built with **Rust + egui**. Work with **Codex, OpenAI AP
 
 [Quick start](#quick-start) · [Screenshots](#screenshots) · [Provider setup](docs/providers.md) · [Documentation](#documentation)
 
-![hfx welcome screen with a project sidebar, starter prompts, and chat composer](assets/screenshots/welcome.png)
+[![hfx welcome screen with the six-lobed terminal mark, project sidebar, starter prompts, and a Git-aware chat composer](assets/screenshots/welcome.png)](assets/screenshots/welcome.png)
 
 ## What it does
 
@@ -81,13 +81,15 @@ Chats and file context are saved locally in **plaintext**. API keys entered in s
 
 ## Screenshots
 
-These are native captures of **scripted previews**, not live model sessions. They contain no private chat history or login credentials. Click an image to view it at full size.
+Fresh native captures of the isolated **scripted previews**, not live model sessions. They show the current welcome mark, project Git branch indicator, tool activity, and provider settings without private chat history or login credentials. Click an image to view it at full size.
 
-| Tool activity and recorded file changes | Provider settings and Codex sign-in |
+| Tool activity and pending file changes | Provider settings and Codex sign-in |
 | --- | --- |
-| [![hfx conversation with a collapsible file-edit, read, and command history plus a file-change badge](assets/screenshots/actions.png)](assets/screenshots/actions.png) | [![hfx provider settings showing Codex, OpenAI API, llama.cpp, OpenRouter, Demo, and context-compaction controls](assets/screenshots/codex.png)](assets/screenshots/codex.png) |
+| [![hfx conversation with collapsed file-edit, read, and command history, a pending file-change badge, and the Git branch in the composer](assets/screenshots/actions.png)](assets/screenshots/actions.png) | [![hfx provider settings showing Codex, OpenAI API, OpenRouter, llama.cpp, Demo, OpenAI sign-in, and model and reasoning controls](assets/screenshots/codex.png)](assets/screenshots/codex.png) |
 
-The welcome screen is shown above. To reproduce all three images, see [Refresh README screenshots](docs/development.md#refresh-readme-screenshots).
+The welcome screen above features the six-lobed terminal mark, starter prompts, and project-aware composer. The file-change badge tracks pending file-tool edits; once Git reports a path clean after a commit or revert, background checks clear its badge while preserving its recorded diffs in the action history. See [pending edit badge behavior](docs/usage.md#pending-edit-badge).
+
+To reproduce all three images, see [Refresh README screenshots](docs/development.md#refresh-readme-screenshots).
 
 ## Shortcuts
 

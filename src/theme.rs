@@ -510,39 +510,29 @@ pub fn section(ui: &mut Ui, text: &str) {
     ui.add_space(3.0);
 }
 
-/// Reuse our own hfx monogram for welcome, window, and desktop branding.
+/// Original six-lobed welcome mark with a terminal glyph and optional breathing.
+/// Desktop and window icons continue to use the separate hfx monogram asset.
 pub fn logo(ui: &mut Ui, size: f32, time: f64, animated: bool) {
-    let id = egui::Id::new("hfx.brand-monogram");
-    let cached = ui
-        .ctx()
-        .data_mut(|data| data.get_temp::<egui::TextureHandle>(id));
-    let texture = cached.unwrap_or_else(|| {
-        let image = image::load_from_memory(include_bytes!("../assets/hfx.png"))
-            .expect("embedded hfx monogram")
-            .into_rgba8();
-        let pixels = egui::ColorImage::from_rgba_unmultiplied(
-            [image.width() as usize, image.height() as usize],
-            image.as_raw(),
-        );
-        let texture = ui
-            .ctx()
-            .load_texture("hfx-monogram", pixels, egui::TextureOptions::LINEAR);
-        ui.ctx()
-            .data_mut(|data| data.insert_temp(id, texture.clone()));
-        texture
-    });
     let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
-    let scale = if animated {
-        0.96 + (time as f32 * 1.4).sin() * 0.02
+    let c = rect.center();
+    let breath = if animated {
+        (time as f32 * 1.4).sin() * 0.025
     } else {
-        0.96
+        0.0
     };
-    ui.painter().image(
-        texture.id(),
-        Rect::from_center_size(rect.center(), Vec2::splat(size * scale)),
-        Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)),
-        Color32::WHITE,
-    );
+    let r = size * (0.38 + breath);
+    let points = (0..=64)
+        .map(|i| {
+            let a = i as f32 * std::f32::consts::TAU / 64.0;
+            let radius = r * (1.0 + 0.075 * (a * 6.0).cos());
+            c + vec2(a.cos(), a.sin()) * radius
+        })
+        .collect();
+    ui.painter().add(egui::Shape::line(
+        points,
+        Stroke::new(1.5, ACCENT.gamma_multiply(0.65)),
+    ));
+    icon(ui.painter(), c, size * 0.4, Icon::Terminal, ACCENT);
 }
 
 pub fn markdown(ui: &mut Ui, text: &str, size: f32, color: Color32) {
@@ -553,51 +543,109 @@ pub fn markdown(ui: &mut Ui, text: &str, size: f32, color: Color32) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn welcome_logo_uses_the_cached_hfx_asset_without_a_six_lobed_outline() {
+    fn welcome_logo_shapes(size: f32, time: f64, animated: bool, scale: f32) -> Vec<egui::Shape> {
         let ctx = egui::Context::default();
-        install(&ctx, 14.0, true);
-        let mut texture_id = None;
-        for (index, size) in [44.0, 64.0, 44.0].into_iter().enumerate() {
-            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-                logo(ui, size, index as f64, false);
-            });
-            let uploaded = output.textures_delta.set.clone();
-            output.textures_delta.clear();
-            let texture = ctx
-                .data_mut(|data| {
-                    data.get_temp::<egui::TextureHandle>(egui::Id::new("hfx.brand-monogram"))
-                })
-                .expect("hfx monogram is cached");
-            if let Some(id) = texture_id {
-                assert_eq!(texture.id(), id);
-                assert!(!uploaded.iter().any(|(id, _)| *id == texture.id()));
-            } else {
-                texture_id = Some(texture.id());
-                let updates = &uploaded
+        install(&ctx, 14.0, !animated);
+        ctx.set_pixels_per_point(scale);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            logo(ui, size, time, animated);
+        });
+        output.textures_delta.clear();
+        assert!(
+            ctx.data_mut(
+                |data| data.get_temp::<egui::TextureHandle>(egui::Id::new("hfx.brand-monogram"))
+            )
+            .is_none(),
+            "welcome must not load the desktop monogram"
+        );
+        let shapes: Vec<_> = output.shapes.into_iter().map(|shape| shape.shape).collect();
+        assert!(
+            !shapes
+                .iter()
+                .any(|shape| matches!(shape, egui::Shape::Mesh(_)))
+        );
+        shapes
+    }
+
+    fn welcome_outline(shapes: &[egui::Shape]) -> &egui::epaint::PathShape {
+        let outlines: Vec<_> = shapes
+            .iter()
+            .filter_map(|shape| match shape {
+                egui::Shape::Path(path) => Some(path),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(outlines.len(), 1);
+        outlines[0]
+    }
+
+    #[test]
+    fn welcome_logo_matches_the_original_six_lobed_terminal_mark() {
+        for scale in [1.0, 1.5, 2.0] {
+            for size in [44.0, 64.0] {
+                let shapes = welcome_logo_shapes(size, 0.0, false, scale);
+                let outline = welcome_outline(&shapes);
+                assert_eq!(outline.points.len(), 65);
+                assert_eq!(outline.fill, Color32::TRANSPARENT);
+                assert_eq!(
+                    outline.stroke,
+                    Stroke::new(1.5, ACCENT.gamma_multiply(0.65)).into()
+                );
+                let center = outline.points[0].lerp(outline.points[32], 0.5);
+                for (index, point) in outline.points.iter().enumerate() {
+                    let angle = index as f32 * std::f32::consts::TAU / 64.0;
+                    let radius = size * 0.38 * (1.0 + 0.075 * (angle * 6.0).cos());
+                    let expected = center + vec2(angle.cos(), angle.sin()) * radius;
+                    assert!(
+                        point.distance(expected) < 0.001,
+                        "original outline geometry changed at size {size}, scale {scale}"
+                    );
+                }
+                assert!(outline.points[0].distance(outline.points[64]) < 0.001);
+                let segments: Vec<_> = shapes
                     .iter()
-                    .find(|(id, _)| **id == texture.id())
-                    .expect("monogram pixels are uploaded")
-                    .1;
-                let egui::ImageData::Color(pixels) = &updates[0].image;
-                let source = image::load_from_memory(include_bytes!("../assets/hfx.png"))
-                    .unwrap()
-                    .into_rgba8();
-                let expected = egui::ColorImage::from_rgba_unmultiplied(
-                    [source.width() as usize, source.height() as usize],
-                    source.as_raw(),
+                    .filter_map(|shape| match shape {
+                        egui::Shape::LineSegment { points, stroke } => Some((points, stroke)),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(
+                    segments.len(),
+                    3,
+                    "terminal glyph must contain its chevron and underscore"
                 );
-                assert!(
-                    pixels.pixels == expected.pixels,
-                    "uploaded pixels must match the premultiplied hfx asset"
-                );
+                let glyph_scale = size * 0.4 / 20.0;
+                for ((points, stroke), (start, end)) in segments.into_iter().zip([
+                    (vec2(-6.0, -4.0), vec2(-2.0, 0.0)),
+                    (vec2(-2.0, 0.0), vec2(-6.0, 4.0)),
+                    (vec2(1.0, 4.0), vec2(7.0, 4.0)),
+                ]) {
+                    assert!(points[0].distance(center + start * glyph_scale) < 0.001);
+                    assert!(points[1].distance(center + end * glyph_scale) < 0.001);
+                    assert_eq!(*stroke, Stroke::new(1.35 * glyph_scale.max(0.85), ACCENT));
+                }
             }
-            assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Mesh(mesh) if mesh.texture_id == texture.id())));
+        }
+    }
+
+    #[test]
+    fn welcome_logo_breathes_only_when_motion_is_enabled() {
+        for size in [44.0, 64.0] {
+            let still = welcome_logo_shapes(size, 0.0, false, 1.0);
+            let later = welcome_logo_shapes(size, 10.0, false, 1.0);
+            assert_eq!(welcome_outline(&still), welcome_outline(&later));
+            let expanded = welcome_logo_shapes(size, std::f64::consts::FRAC_PI_2 / 1.4, true, 1.0);
+            let contracted =
+                welcome_logo_shapes(size, 3.0 * std::f64::consts::FRAC_PI_2 / 1.4, true, 1.0);
+            let diameter = |shapes: &[egui::Shape]| {
+                let path = welcome_outline(shapes);
+                path.points[0].distance(path.points[32])
+            };
+            assert!(diameter(&expanded) > diameter(&still));
+            assert!(diameter(&contracted) < diameter(&still));
             assert!(
-                !output
-                    .shapes
-                    .iter()
-                    .any(|shape| matches!(&shape.shape, egui::Shape::Path(_)))
+                diameter(&expanded) < size,
+                "breathing stays inside the allocated logo area"
             );
         }
     }
