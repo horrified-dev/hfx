@@ -18,6 +18,12 @@ The composer header checks the selected project's local Git metadata and shows *
 
 Checks run in the background, refresh every three seconds, and time out after two seconds. Git output is bounded to 64 KiB per stream. Changing projects discards the previous project's results. These fixed read-only Git queries do not run a shell, invoke repository hooks or fsmonitor, fetch from remotes, modify the index, or grant project trust.
 
+## Pending edit badge
+
+The **files changed / +added / −removed** badge summarizes pending file-tool edits in the selected chat, not its lifetime edit history. Background Git checks retire a path's old edits when no staged, unstaged, or untracked change remains for it. After committing and pushing, the badge disappears automatically on the next check (normally within three seconds); a commit or revert can clear it before a push, since pushing does not change the local file diff. Other unrelated dirty files do not keep committed edits in the badge.
+
+Historical diffs remain saved and available in action history. Fresh edits start a new pending count rather than bringing old line counts back. Staged and untracked edits remain pending. Ignored QA artifacts are excluded from the Git-pending badge, while their diffs stay in action history. For non-Git projects, custom-filtered files, or failed/timed-out checks, hfx conservatively retains pending edits rather than discarding them. Checks do not commit, push, fetch, execute configured filters/diff helpers/fsmonitor, or erase history.
+
 ## Queueing and steering
 
 While a response is running, **Enter** queues the composer text and attachments as a follow-up instead of discarding or interrupting the current run. The queue appears above the composer with **Steer**, edit, and delete controls. Multiple follow-ups run in FIFO order after successful completion. **Shift+Enter** still inserts a newline.

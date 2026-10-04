@@ -81,7 +81,7 @@ cargo run --locked -- --preview=images
 cargo run --locked -- --preview=image-viewer
 ```
 
-Other previews: `trust`, `trust-changed`, `recovery`, `recovery-busy`, `edit-approval`, `git-branch`, `git-no-repo`, `git-detached`, `git-bare`, `git-long-branch`, `git-error`, `markdown`, `reasoning`, `appearance`, `tools`, `menu`, `codex`, `openrouter`, and `git-attribution`. `git-live` keeps synthetic chat data but probes the current directory's real, local Git metadata. The [Markdown preview](../artifacts/markdown-preview.png) demonstrates commit links, formatted labels, and literal code.
+Other previews: `trust`, `trust-changed`, `recovery`, `recovery-busy`, `edit-approval`, `git-branch`, `git-no-repo`, `git-detached`, `git-bare`, `git-long-branch`, `git-error`, `markdown`, `reasoning`, `appearance`, `tools`, `menu`, `codex`, `openrouter`, and `git-attribution`. `edits-settled` shows preserved action history without a pending badge; `edits-live` uses synthetic edit history but checks the current directory's real Git state. `git-live` keeps synthetic chat data but probes the current directory's real, local Git metadata. The [Markdown preview](../artifacts/markdown-preview.png) demonstrates commit links, formatted labels, and literal code.
 
 ### Refresh README screenshots
 
@@ -147,6 +147,7 @@ cargo test --locked demo_blender_mcp -- --ignored --nocapture
 - [`src/file_edit.rs`](../src/file_edit.rs): bounded precise text editing, full-file digests, stale-content checks and atomic replacement.
 - [`src/file_metadata.rs`](../src/file_metadata.rs): access-control-preserving file replacement and platform metadata handling.
 - [`src/git_status.rs`](../src/git_status.rs): asynchronous, bounded local Git/branch discovery and refresh.
+- [`src/pending_edits.rs`](../src/pending_edits.rs), [`src/app/edits.rs`](../src/app/edits.rs): background Git reconciliation of pending badges without removing saved diffs.
 - [`src/recovery.rs`](../src/recovery.rs): startup load handling and explicit private history backups.
 - [`src/file_read.rs`](../src/file_read.rs): context-budgeted UTF-8 file paging and continuation metadata.
 - [`src/tools.rs`](../src/tools.rs): workspace path checks, file tools, command execution and captured output.

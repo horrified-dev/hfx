@@ -108,6 +108,8 @@ impl Harness {
                 | "question"
                 | "images"
                 | "image-viewer"
+                | "edits-settled"
+                | "edits-live"
         ) {
             let mut user = Message::new(
                 true,
@@ -221,7 +223,10 @@ impl Harness {
                     self.open_image(ctx, image);
                 }
             }
-            if matches!(kind, "actions" | "attachments" | "question") {
+            if matches!(
+                kind,
+                "actions" | "attachments" | "question" | "edits-settled" | "edits-live"
+            ) {
                 let message = &mut self.saved.chats[0].messages[1];
                 message.reasoning.clear();
                 message.text = "Added a calmer welcome screen and checked the build.".into();
@@ -234,6 +239,12 @@ impl Harness {
                     message.id,
                     (Reveal::complete(&message.text), Reveal::default()),
                 );
+                if kind == "edits-settled" {
+                    self.settle_edits(self.pending_edits());
+                } else if kind == "edits-live" {
+                    self.git_probe = Default::default();
+                    self.edit_probe = Default::default();
+                }
                 if matches!(kind, "attachments" | "question") {
                     self.saved.chats[0].attachments.push(
                         attachments::from_bytes("welcome.rs".into(), b"fn welcome() {}\n").unwrap(),

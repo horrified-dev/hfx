@@ -16,6 +16,7 @@ mod mcp;
 mod mcp_ui;
 mod motion;
 mod notifications;
+mod pending_edits;
 mod persistence;
 mod recovery;
 mod sandbox;

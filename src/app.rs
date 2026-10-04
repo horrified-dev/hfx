@@ -2,6 +2,7 @@ mod attachments_ui;
 mod composer;
 mod conversation;
 mod dialogs;
+mod edits;
 mod previews;
 mod safety;
 mod settings;
@@ -308,6 +309,7 @@ pub struct Harness {
     view_started: f64,
     style_key: (f32, bool),
     git_probe: crate::git_status::Probe,
+    edit_probe: crate::pending_edits::Probe,
     probe_rx: Option<Receiver<Result<Vec<backend::ModelInfo>, String>>>,
     mcp_probe: crate::mcp_ui::Probe,
     probe_result: Option<Result<Vec<backend::ModelInfo>, String>>,
@@ -416,6 +418,11 @@ impl Harness {
                     name: "main".into(),
                     bare: false,
                 })
+            } else {
+                Default::default()
+            },
+            edit_probe: if preview.is_some() {
+                crate::pending_edits::Probe::disabled()
             } else {
                 Default::default()
             },
@@ -1190,6 +1197,7 @@ fn changed_totals(chat: &Chat) -> (usize, usize, usize) {
         .iter()
         .flat_map(|m| &m.activities)
         .filter_map(|a| a.change.as_ref())
+        .filter(|change| !change.settled)
     {
         paths.insert(&change.path);
         added += change.added;

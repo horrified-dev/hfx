@@ -41,6 +41,7 @@ pub fn file_change(path: &str, before: &str, after: &str) -> FileChange {
         }
     }
     FileChange {
+        settled: false,
         path: path.into(),
         added,
         removed,

@@ -416,8 +416,12 @@ pub enum ActionStatus {
     Cancelled,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileChange {
+    /// Excluded from the pending badge once Git confirms no staged, unstaged,
+    /// or untracked change remains, or the path is ignored. The historical diff is kept.
+    #[serde(default)]
+    pub settled: bool,
     pub path: String,
     pub added: usize,
     pub removed: usize,

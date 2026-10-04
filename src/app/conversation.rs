@@ -99,7 +99,11 @@ impl Harness {
                 })
                 .response
                 .interact(Sense::click());
-            if response.on_hover_text("View edits in this chat").clicked() {
+            let mut tooltip = "View saved edit history. The badge excludes committed, reverted, and Git-ignored edits; historical diffs are kept.".to_owned();
+            if let Some(error) = &self.edit_probe.error {
+                tooltip.push_str(&format!("\nGit reconciliation is paused: {error}"));
+            }
+            if response.on_hover_text(tooltip).clicked() {
                 self.changes_open = true;
             }
         });

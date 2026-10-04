@@ -559,7 +559,8 @@ impl Harness {
         }
         self.mcp_probe.poll(ctx, interval);
         let git_root = PathBuf::from(&self.project().path);
-        self.git_probe.update(ctx, &self.runtime, git_root);
+        self.git_probe.update(ctx, &self.runtime, git_root.clone());
+        self.poll_pending_edits(ctx, git_root);
         if let Some(rx) = &self.probe_rx {
             if let Ok(result) = rx.try_recv() {
                 self.probe_result = Some(result);

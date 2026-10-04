@@ -5,6 +5,12 @@ use eframe::App;
 #[path = "safety_tests.rs"]
 mod safety_regressions;
 
+#[path = "edit_badge_tests.rs"]
+mod edit_badge;
+
+#[path = "edit_badge_live_tests.rs"]
+mod edit_badge_live;
+
 fn draw(
     app: &mut Harness,
     ctx: &egui::Context,
@@ -1102,6 +1108,8 @@ fn typing_keeps_large_tool_history_shared_while_background_saving() {
 #[ignore = "writes headless visual QA artifacts"]
 fn export_headless_previews() {
     for (preview, width, height) in [
+        ("edits-settled", 1180, 820),
+        ("edits-settled", 720, 540),
         ("git-branch", 1180, 820),
         ("git-branch", 720, 540),
         ("git-no-repo", 720, 540),

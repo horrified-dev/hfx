@@ -65,10 +65,28 @@ impl Status {
     }
 }
 
-async fn git(root: &Path, args: &[&str]) -> Result<std::process::Output, String> {
+pub(crate) async fn git(root: &Path, args: &[&str]) -> Result<std::process::Output, String> {
+    git_with_config(root, args, &[]).await
+}
+
+pub(crate) async fn git_with_config(
+    root: &Path,
+    args: &[&str],
+    overrides: &[String],
+) -> Result<std::process::Output, String> {
     let mut command = tokio::process::Command::new("git");
+    command.args([
+        "--no-pager",
+        "--no-optional-locks",
+        "--literal-pathspecs",
+        "-c",
+        "core.fsmonitor=false",
+    ]);
+    for config in overrides {
+        command.arg("-c").arg(config);
+    }
     command
-        .args(["--no-pager", "--no-optional-locks", "-C"])
+        .arg("-C")
         .arg(root)
         .args(args)
         .stdin(Stdio::null())
