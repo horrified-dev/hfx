@@ -14,6 +14,12 @@ mod edit_badge_live;
 #[path = "context_tests.rs"]
 mod context_regressions;
 
+#[path = "provider_queue_tests.rs"]
+mod provider_queue_regressions;
+
+#[path = "project_tests.rs"]
+mod project_regressions;
+
 #[path = "performance_tests.rs"]
 mod performance_regressions;
 
@@ -22,6 +28,12 @@ mod virtualization_regressions;
 
 #[path = "question_layout_tests.rs"]
 mod question_layout_regressions;
+
+#[path = "attachment_tests.rs"]
+mod attachment_regressions;
+
+#[path = "settings_layout_tests.rs"]
+mod settings_layout_regressions;
 
 fn draw(
     app: &mut Harness,
@@ -812,112 +824,6 @@ fn compaction_events_update_the_original_chat_and_persist_without_erasing_visibl
 }
 
 #[test]
-fn project_dialog_focus_validation_add_duplicates_and_cancel() {
-    let root = tempfile::tempdir().unwrap();
-    let ctx = egui::Context::default();
-    let cc = eframe::CreationContext::_new_kittest(ctx.clone());
-    let mut app = Harness::new(&cc, Some("welcome".into()));
-    let initial_projects = app.saved.projects.len();
-    app.project_modal = true;
-    app.project_focus = true;
-    draw(
-        &mut app,
-        &ctx,
-        720.0,
-        540.0,
-        0.0,
-        vec![],
-        egui::Modifiers::NONE,
-    );
-    assert!(ctx.memory(|m| m.has_focus(Id::new("project_folder_path"))));
-    let output = draw(
-        &mut app,
-        &ctx,
-        720.0,
-        540.0,
-        0.2,
-        vec![],
-        egui::Modifiers::NONE,
-    );
-    let pos = text_position(&output.shapes, "Add project");
-    for frame in 2..=3 {
-        draw(
-            &mut app,
-            &ctx,
-            720.0,
-            540.0,
-            frame as f64 * 0.2,
-            vec![
-                egui::Event::PointerMoved(pos),
-                pointer_button(pos, egui::PointerButton::Primary, frame == 2),
-            ],
-            egui::Modifiers::NONE,
-        );
-    }
-    assert!(app.project_modal, "blank submission is disabled");
-    assert_eq!(app.saved.projects.len(), initial_projects);
-    app.project_path = root.path().join("missing").display().to_string();
-    ctx.memory_mut(|m| m.request_focus(Id::new("project_folder_path")));
-    draw(
-        &mut app,
-        &ctx,
-        720.0,
-        540.0,
-        0.8,
-        vec![key(egui::Key::Enter, egui::Modifiers::NONE)],
-        egui::Modifiers::NONE,
-    );
-    assert!(app.project_modal);
-    assert!(app.project_error.is_some());
-    app.project_path = root.path().display().to_string();
-    ctx.memory_mut(|m| m.request_focus(Id::new("project_folder_path")));
-    draw(
-        &mut app,
-        &ctx,
-        720.0,
-        540.0,
-        1.0,
-        vec![key(egui::Key::Enter, egui::Modifiers::NONE)],
-        egui::Modifiers::NONE,
-    );
-    assert!(!app.project_modal);
-    assert!(app.project_error.is_none());
-    assert_eq!(app.saved.projects.len(), initial_projects + 1);
-    assert_eq!(
-        app.project().path,
-        root.path().canonicalize().unwrap().display().to_string()
-    );
-    app.project_modal = true;
-    app.project_path = root.path().display().to_string();
-    ctx.memory_mut(|m| m.request_focus(Id::new("project_folder_path")));
-    draw(
-        &mut app,
-        &ctx,
-        720.0,
-        540.0,
-        1.2,
-        vec![key(egui::Key::Enter, egui::Modifiers::NONE)],
-        egui::Modifiers::NONE,
-    );
-    assert_eq!(
-        app.saved.projects.len(),
-        initial_projects + 1,
-        "existing folders aren't duplicated"
-    );
-    app.project_modal = true;
-    draw(
-        &mut app,
-        &ctx,
-        720.0,
-        540.0,
-        1.4,
-        vec![key(egui::Key::Escape, egui::Modifiers::NONE)],
-        egui::Modifiers::NONE,
-    );
-    assert!(!app.project_modal);
-}
-
-#[test]
 fn rename_dialog_focus_validation_save_and_cancel() {
     for action in ["Enter", "Save", "Cancel", "Escape", "Blank"] {
         let ctx = egui::Context::default();
@@ -1139,6 +1045,8 @@ fn export_headless_previews() {
         ("edit-approval", 720, 540),
         ("settings", 1180, 820),
         ("settings", 720, 540),
+        ("llama", 1180, 820),
+        ("llama", 720, 540),
         ("appearance", 1180, 820),
         ("appearance", 720, 540),
         ("tools", 1180, 820),
@@ -1187,9 +1095,11 @@ fn export_headless_previews() {
         ("rename-dialog", 1180, 820),
         ("rename-dialog", 720, 540),
         ("rename-dialog-empty", 720, 540),
-        ("project-dialog", 1180, 820),
-        ("project-dialog", 720, 540),
-        ("project-dialog-error", 720, 540),
+        ("project-remove", 1180, 820),
+        ("project-remove", 720, 540),
+        ("project-remove-running", 720, 540),
+        ("project-menu", 720, 540),
+        ("project-empty", 720, 540),
     ] {
         let ctx = egui::Context::default();
         let cc = eframe::CreationContext::_new_kittest(ctx.clone());
@@ -1210,7 +1120,7 @@ fn export_headless_previews() {
                     "actions"
                 } else if is_chat_menu
                     || preview.starts_with("rename-dialog")
-                    || preview.starts_with("project-dialog")
+                    || preview.starts_with("project-")
                 {
                     "chat"
                 } else {
@@ -1330,21 +1240,27 @@ fn export_headless_previews() {
             ));
             app.rename_focus = true;
         }
-        if preview.starts_with("project-dialog") {
-            app.project_modal = true;
-            app.project_focus = true;
-            app.project_path = app.project().path.clone();
-            if preview.ends_with("error") {
-                app.project_path = "/missing/project".into();
-                app.project_error = Some("Enter the path of an existing folder.".into());
+        if preview.starts_with("project-remove") {
+            app.remove_project = Some(app.project().id);
+            if preview.ends_with("running") {
+                let (events, steering) = fake_active(&mut app);
+                app.active.as_mut().unwrap().task.abort();
+                app.active.as_mut().unwrap().task = app.runtime.spawn(async move {
+                    let _channels = (events, steering);
+                    std::future::pending::<()>().await;
+                });
             }
+        }
+        if preview == "project-empty" {
+            app.remove_project_from_app(app.project().id, 0.0);
+            app.toast = None;
         }
         let mut menu_anchor = pos2(0.0, 0.0);
         let mut textures: HashMap<egui::TextureId, egui::ColorImage> = HashMap::new();
         let mut shapes = Vec::new();
         for frame in 0..8 {
             let mut events = Vec::new();
-            if is_chat_menu {
+            if is_chat_menu || preview == "project-menu" {
                 if frame == 2 || frame == 3 {
                     events.push(egui::Event::PointerMoved(menu_anchor));
                     events.push(pointer_button(
@@ -1386,12 +1302,12 @@ fn export_headless_previews() {
                     modifiers: egui::Modifiers::NONE,
                 });
             }
-            if preview == "git-attribution" && frame == 2 {
+            if matches!(preview, "git-attribution" | "llama") && frame == 2 {
                 events.push(egui::Event::PointerMoved(pos2(width as f32 - 175.0, 260.0)));
                 events.push(egui::Event::MouseWheel {
                     unit: egui::MouseWheelUnit::Point,
                     phase: egui::TouchPhase::Move,
-                    delta: vec2(0.0, -360.0),
+                    delta: vec2(0.0, if preview == "llama" { -400.0 } else { -360.0 }),
                     modifiers: egui::Modifiers::NONE,
                 });
             }
@@ -1432,6 +1348,21 @@ fn export_headless_previews() {
             shapes = output.shapes;
             if is_chat_menu && frame == 1 {
                 menu_anchor = text_position(&shapes, &app.saved.chats[0].title);
+            }
+            if preview == "project-menu" && frame == 1 {
+                menu_anchor = shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text)
+                            if text.galley.job.text == app.project().name
+                                && text.pos.x >= 72.0
+                                && text.pos.x < 294.0 =>
+                        {
+                            Some(text.pos + vec2(4.0, text.galley.size().y / 2.0))
+                        }
+                        _ => None,
+                    })
+                    .expect("project row is visible in sidebar");
             }
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -1881,8 +1812,12 @@ fn fake_active(
     mpsc::Sender<Event>,
     tokio::sync::mpsc::UnboundedReceiver<Message>,
 ) {
+    let connection = app.saved.settings.context_key();
+    let provider = app.saved.settings.provider.label().to_owned();
     let chat = &mut app.saved.chats[0];
     let message = chat.messages.last_mut().unwrap();
+    message.context_connection = connection;
+    message.provider = provider;
     message.status = Status::Streaming;
     let (tx, rx) = mpsc::channel();
     let (steering, receive) = tokio::sync::mpsc::unbounded_channel();

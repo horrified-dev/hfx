@@ -20,8 +20,8 @@ The tests cover:
 - **Authentication:** credential serialization, PKCE against the RFC test vector, callback/state validation, code exchange, refresh-token rotation, HTTP 401 retry, and cancellation.
 - **Tools and security:** paged file reads, workspace and optional sandbox boundaries, bounded command output, durable partial logs, process-group cancellation, Git pushes with preserved host identity/SSH setup, and web search/fetch with source replay.
 - **MCP:** explicit opt-in, configuration validation, collision-safe names, paginated discovery, stdio lifecycle, Streamable HTTP JSON/SSE, environment-based auth, timeouts without retries, images/structured results, and approvals with replay through every provider.
-- **Conversation state:** 75% context thresholds, bounded summaries, tool-safe compaction and checkpoint replay, summary failure safety, FIFO queues, safe-boundary steering, attachment replay, paused queue recovery, and interrupted-turn recovery.
-- **Images and UI:** Markdown link rendering, wrapped/Unicode link hit regions, click/keyboard activation, text-selection safety, the original six-lobed terminal welcome mark and reduced-motion behavior, image tool round trips, image-only replies, saved image context, keyboard handling, project/rename validation, chronological tool groups, independent disclosures, icon alignment, and layouts at two window sizes.
+- **Conversation state:** 75% context thresholds, bounded summaries, tool-safe compaction and checkpoint replay, repeated Codex/llama.cpp switching with 500K legacy context, exact-connection private-state isolation, chat-local connection restoration/migration, connection-bound FIFO queues and steering, attachment replay, paused queue recovery, and interrupted-turn recovery.
+- **Images and UI:** Markdown link rendering, wrapped/Unicode link hit regions, click/keyboard activation, text-selection safety, the original six-lobed terminal welcome mark and reduced-motion behavior, image tool round trips, image-only replies, saved image context, keyboard handling, native project-picker result handling/deduplication, project removal/last-project persistence with disk-file preservation and active-run guards, rename validation, chronological tool groups, independent disclosures, icon alignment, and layouts at two window sizes.
 - **Lifecycle and desktop integration:** background saves with large histories, hidden-window logic, question timeouts, bounded event draining, Linux nonblocking VSync, localized launcher paths and ownership, installer updates, data-preserving uninstall, completion-alert batching and helper timeouts, final-save fences, bounded cleanup, atomic PNG export, and Git attribution settings/instructions.
 
 [Rust quality CI](../.github/workflows/checks.yml) enforces these checks on Linux for both Rust 1.95 (the minimum supported version) and stable. It provisions bubblewrap 0.12 for the actual sandbox regression tests and runs Linux/macOS installer filesystem fixtures. The separate native macOS workflow still validates the macOS release bundle. No quality checks are skipped because of a missing sandbox runner.
@@ -103,6 +103,7 @@ cargo run --locked -- --preview=question
 cargo run --locked -- --preview=images
 cargo run --locked -- --preview=image-viewer
 cargo run --locked -- --preview=markdown-blocks
+cargo run --locked -- --preview=llama
 ```
 
 Other previews: `trust`, `trust-changed`, `recovery`, `recovery-busy`, `edit-approval`, `git-branch`, `git-no-repo`, `git-detached`, `git-bare`, `git-long-branch`, `git-error`, `markdown`, `reasoning`, `appearance`, `tools`, `menu`, `codex`, `openrouter`, and `git-attribution`. `edits-settled` shows preserved action history without a pending badge; `edits-live` uses synthetic edit history but checks the current directory's real Git state. `git-live` keeps synthetic chat data but probes the current directory's real, local Git metadata. The [Markdown preview](../artifacts/markdown-preview.png) demonstrates commit links, formatted labels, and literal code.
@@ -113,6 +114,13 @@ nested/ordered lists, continuations, literal code, table validation/escapes,
 streaming, narrow layouts, resize/font/DPI changes, selection, safe links, and
 horizontal scrolling. Viewport tests also compare list/table geometry with the
 full-layout fallback.
+
+The `llama` preview seeds eleven synthetic discovered models without contacting a
+server. Connection-layout tests bound the spacing around primary actions across
+provider, viewport, DPI, and probe states and exercise native model selection.
+Attachment routing tests inject native file-list detection without reading or
+changing the user's clipboard; they preserve normal paste/selection/undo,
+composer/modal guards, original-chat loading, and attachment limits.
 
 ### Refresh README screenshots
 

@@ -779,7 +779,7 @@ fn accept_steering(
     tx.send(Event::ResponsesContext(std::mem::take(wire)))
         .map_err(|_| "Window closed")?;
     for message in &messages {
-        let items = history_items(message, settings.provider);
+        let items = history_items_for_settings(message, settings);
         let growth = context::estimate_items(&items);
         *measured = measured.map(|usage| usage.with_growth(growth));
         history.extend(items);
@@ -806,11 +806,8 @@ fn previous_context_usage(messages: &[Message], settings: &Settings) -> Option<c
                 return Some(context::Usage::reported(message.context_tokens).with_growth(growth));
             }
         }
-        if message
-            .context_checkpoint
-            .as_ref()
-            .is_some_and(|checkpoint| context::compatible(checkpoint, settings))
-        {
+        if message.context_checkpoint.is_some() {
+            // Even a translated checkpoint replaces the old transcript.
             return None;
         }
         if !message.text.is_empty()
@@ -823,9 +820,8 @@ fn previous_context_usage(messages: &[Message], settings: &Settings) -> Option<c
             if !message.user && message.provider != settings.provider.label() {
                 return None;
             }
-            growth = growth.saturating_add(context::estimate_items(&history_items(
-                message,
-                settings.provider,
+            growth = growth.saturating_add(context::estimate_items(&history_items_for_settings(
+                message, settings,
             )));
         }
     }
@@ -915,7 +911,9 @@ async fn agent(
         })
         .cloned()
         .collect::<Vec<_>>();
-    let mut history = context::replay(&replayable, &settings, history_items);
+    let mut history = context::replay(&replayable, &settings, |message, _| {
+        history_items_for_settings(message, &settings)
+    });
     let client = client()?;
     let mut context = Vec::new();
     let limit = settings.context_limit();
@@ -1617,22 +1615,39 @@ pub async fn wait_answer(
     }
 }
 
+#[cfg(test)]
 fn history_items(message: &Message, provider: Provider) -> Vec<Value> {
+    history_items_with_state(message, provider, message.provider == provider.label())
+}
+
+fn history_items_for_settings(message: &Message, settings: &Settings) -> Vec<Value> {
+    history_items_with_state(
+        message,
+        settings.provider,
+        message.provider == settings.provider.label()
+            && message.context_connection == settings.context_key(),
+    )
+}
+
+fn history_items_with_state(
+    message: &Message,
+    provider: Provider,
+    reuse_state: bool,
+) -> Vec<Value> {
     let responses = matches!(provider, Provider::Codex | Provider::OpenAI);
-    if !message.user && message.provider == provider.label() && !message.response_items.is_empty() {
+    if !message.user && !message.response_items.is_empty() {
         let mut items = (*message.response_items).clone();
         // Older saved turns may contain only encrypted reasoning. Preserve the
         // visible answer too when no assistant message was saved on the wire.
         let has_answer = items.iter().any(|item| {
             item["role"] == "assistant"
-                && if responses {
-                    item["content"]
-                        .as_array()
-                        .is_some_and(|parts| parts.iter().any(|p| p["type"] == "output_text"))
-                } else {
-                    item["tool_calls"].is_null()
-                        && item["content"].as_str().is_some_and(|s| !s.is_empty())
-                }
+                && (item["content"].as_str().is_some_and(|s| !s.is_empty())
+                    || (item["tool_calls"].is_null()
+                        && item["content"].as_array().is_some_and(|parts| {
+                            parts
+                                .iter()
+                                .any(|p| matches!(p["type"].as_str(), Some("output_text" | "text")))
+                        })))
         });
         if !message.text.is_empty() && !has_answer {
             items.push(if responses {
@@ -1653,7 +1668,11 @@ fn history_items(message: &Message, provider: Provider) -> Vec<Value> {
         if !has_images {
             append_saved_images(&mut items, message, responses);
         }
-        return items;
+        return if reuse_state {
+            items
+        } else {
+            context::portable_items(&items, provider)
+        };
     }
     if responses && !message.user {
         let mut items = vec![
@@ -1685,7 +1704,11 @@ fn history_items(message: &Message, provider: Provider) -> Vec<Value> {
     };
     let mut item =
         json!({"role":if message.user { "user" } else { "assistant" }, "content": content});
-    if provider == Provider::OpenRouter && !message.user && !message.reasoning_details.is_empty() {
+    if reuse_state
+        && provider == Provider::OpenRouter
+        && !message.user
+        && !message.reasoning_details.is_empty()
+    {
         item["reasoning_details"] = json!(message.reasoning_details);
     }
     let mut items = vec![item];
@@ -1959,6 +1982,7 @@ mod tests {
                 Some(receive),
             ));
             let mut answer = Message::new(false, String::new(), 0.0, provider.label().into());
+            answer.context_connection = settings.context_key();
             let mut finished_tools = 0;
             let mut accepted = 0;
             loop {
@@ -1979,6 +2003,7 @@ mod tests {
                         history.push(answer);
                         history.extend(users);
                         answer = Message::new(false, String::new(), 0.0, provider.label().into());
+                        answer.context_connection = settings.context_key();
                     }
                     Event::Text(text) => answer.text.push_str(&text),
                     Event::ResponsesContext(wire) => answer.response_items = wire.into(),
@@ -3411,6 +3436,7 @@ mod tests {
                     assert_eq!(tools_finished, 14);
                     assert_eq!(text, "Finished all fourteen steps.");
                     let mut previous = Message::new(false, text, 0.0, provider.label().into());
+                    previous.context_connection = settings.context_key();
                     previous.response_items = context.into();
                     let restored: Message =
                         serde_json::from_str(&serde_json::to_string(&previous).unwrap()).unwrap();
@@ -3724,6 +3750,11 @@ mod tests {
         let auth = crate::codex::Auth::fixture(url);
         let root = tempfile::tempdir().unwrap();
         let mut previous = Message::new(false, "Previous answer".into(), 0.0, "Codex".into());
+        previous.context_connection = Settings {
+            provider: Provider::Codex,
+            ..Settings::default()
+        }
+        .context_key();
         previous.response_items =
             vec![json!({"type":"reasoning","encrypted_content":"saved-opaque","summary":[]})]
                 .into();
@@ -4563,6 +4594,10 @@ mod safety_tests;
 #[cfg(test)]
 #[path = "backend_context_tests.rs"]
 mod context_tests;
+
+#[cfg(test)]
+#[path = "backend_provider_switch_tests.rs"]
+mod provider_switch_tests;
 
 #[cfg(test)]
 #[path = "backend_performance_tests.rs"]

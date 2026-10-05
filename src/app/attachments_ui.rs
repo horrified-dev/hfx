@@ -45,22 +45,35 @@ impl Harness {
     }
 
     pub(super) fn attachment_input(&mut self, ctx: &egui::Context, input: &mut egui::RawInput) {
+        self.attachment_input_with_file_paths(ctx, input, attachments::clipboard_file_paths);
+    }
+
+    pub(super) fn attachment_input_with_file_paths(
+        &mut self,
+        ctx: &egui::Context,
+        input: &mut egui::RawInput,
+        mut clipboard_files: impl FnMut() -> Option<Vec<PathBuf>>,
+    ) {
         let composer = Id::new(("composer", self.saved.selected));
         let focused = ctx.memory(|m| m.has_focus(composer)) || self.focus_composer;
         if focused
             && !self.settings_open
             && !self.attach_modal
-            && !self.project_modal
+            && self.project_picker_rx.is_none()
+            && self.remove_project.is_none()
             && self.question.is_none()
         {
             input.events.retain(|event| {
                 if let egui::Event::Paste(text) = event {
-                    if let Some(paths) = attachments::file_uris(text) {
-                        self.load_files(ctx, paths);
-                        return false;
-                    }
                     if text.is_empty() {
                         self.paste_clipboard(ctx);
+                        return false;
+                    }
+                    // File managers can offer a real file list plus non-URI text.
+                    // Prefer the copied files, just as the explicit paste menu does.
+                    if let Some(paths) = attachments::file_uris(text).or_else(&mut clipboard_files)
+                    {
+                        self.load_files(ctx, paths);
                         return false;
                     }
                 }

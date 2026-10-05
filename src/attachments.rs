@@ -226,8 +226,10 @@ pub fn file_uris(text: &str) -> Option<Vec<PathBuf>> {
     (!paths.is_empty()).then_some(paths)
 }
 
-/// Read only in response to the user's explicit paste command.
-pub fn clipboard_files_or_image() -> Result<Vec<Attachment>, String> {
+/// Native copied-file formats may coexist with plain text containing only a path
+/// or filename. Read these formats before treating a keyboard paste as prose.
+/// This does not read image pixels or file contents; loading stays off the UI thread.
+pub fn clipboard_file_paths() -> Option<Vec<PathBuf>> {
     #[cfg(target_os = "linux")]
     if std::env::var_os("WAYLAND_DISPLAY").is_some() {
         use wl_clipboard_rs::paste::{ClipboardType, MimeType, Seat, get_contents};
@@ -236,23 +238,41 @@ pub fn clipboard_files_or_image() -> Result<Vec<Attachment>, String> {
                 ClipboardType::Regular,
                 Seat::Unspecified,
                 MimeType::Specific(mime),
-            ) {
-                let mut text = String::new();
-                if pipe.take(64 * 1024).read_to_string(&mut text).is_ok()
-                    && let Some(paths) = file_uris(&text)
-                {
-                    return load_paths(&paths);
-                }
+            ) && let Some(paths) = read_clipboard_file_list(pipe)
+            {
+                return Some(paths);
             }
         }
     }
     #[cfg(target_os = "windows")]
     if let Ok(paths) =
         clipboard_win::get_clipboard::<Vec<PathBuf>, _>(clipboard_win::formats::FileList)
+        && !paths.is_empty()
     {
-        if !paths.is_empty() {
-            return load_paths(&paths);
-        }
+        return Some(paths);
+    }
+    None
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn read_clipboard_file_list(reader: impl Read) -> Option<Vec<PathBuf>> {
+    // Enough for eight maximum-length, percent-encoded paths. Never parse a
+    // truncated list: that could silently attach a prefix or a different path.
+    const MAX_BYTES: usize = 128 * 1024;
+    let mut text = String::new();
+    reader
+        .take((MAX_BYTES + 1) as u64)
+        .read_to_string(&mut text)
+        .ok()?;
+    (text.len() <= MAX_BYTES)
+        .then(|| file_uris(&text))
+        .flatten()
+}
+
+/// Read only in response to the user's explicit paste command.
+pub fn clipboard_files_or_image() -> Result<Vec<Attachment>, String> {
+    if let Some(paths) = clipboard_file_paths() {
+        return load_paths(&paths);
     }
     let mut clipboard =
         arboard::Clipboard::new().map_err(|e| format!("Clipboard unavailable: {e}"))?;
@@ -305,6 +325,42 @@ mod tests {
         assert!(file_uris("file://remote.example/secret").is_none());
         assert!(file_uris("file:///tmp/a\nhello").is_none());
     }
+    #[test]
+    fn native_file_list_payloads_decode_unicode_and_gnome_copy_cut_headers() {
+        for header in ["", "copy\n", "cut\r\n"] {
+            let payload =
+                format!("{header}file:///tmp/caf%C3%A9%20notes.txt\r\nfile:///tmp/code.rs\r\n");
+            assert_eq!(
+                read_clipboard_file_list(payload.as_bytes()).unwrap(),
+                [
+                    PathBuf::from("/tmp/café notes.txt"),
+                    PathBuf::from("/tmp/code.rs")
+                ]
+            );
+        }
+        for payload in [
+            "/tmp/plain-path.txt",
+            "file://remote.example/file",
+            "file:///tmp/ok.txt\nnot a URI",
+            "",
+        ] {
+            assert!(read_clipboard_file_list(payload.as_bytes()).is_none());
+        }
+        assert!(read_clipboard_file_list(&[0xff_u8][..]).is_none());
+    }
+
+    #[test]
+    fn oversized_native_file_lists_are_never_parsed_as_partial_lists() {
+        let mut payload = b"file:///tmp/first.txt\n#".to_vec();
+        payload.resize(128 * 1024, b'x');
+        assert_eq!(
+            read_clipboard_file_list(payload.as_slice()).unwrap(),
+            [PathBuf::from("/tmp/first.txt")]
+        );
+        payload.push(b'x');
+        assert!(read_clipboard_file_list(payload.as_slice()).is_none());
+    }
+
     #[test]
     fn text_and_images_are_real_attachments_with_limits() {
         let text = from_bytes("main.rs".into(), "Hej 👋".as_bytes()).unwrap();

@@ -8,6 +8,11 @@ impl Harness {
 
     pub(super) fn submit(&mut self, ctx: &egui::Context, steer: bool) {
         let index = self.selected_index();
+        if self.saved.projects.is_empty() {
+            self.pick_project(ctx);
+            return;
+        }
+        self.remember_connection();
         let chat_id = self.saved.chats[index].id;
         let text = self.saved.chats[index].draft.trim().to_owned();
         if (text.is_empty() && self.saved.chats[index].attachments.is_empty())
@@ -16,7 +21,8 @@ impl Harness {
             return;
         }
         let chat = &mut self.saved.chats[index];
-        let queued = QueuedMessage::new(text, std::mem::take(&mut chat.attachments));
+        let mut queued = QueuedMessage::new(text, std::mem::take(&mut chat.attachments));
+        queued.connection = chat.connection.clone();
         let id = queued.id;
         if chat.queue.is_empty() {
             chat.queue_paused = false;
@@ -40,6 +46,14 @@ impl Harness {
         let Some(sender) = &active.steering else {
             return;
         };
+        let active_connection = self
+            .saved
+            .chats
+            .iter()
+            .find(|c| c.id == chat_id)
+            .and_then(|c| c.messages.iter().find(|m| m.id == active.message))
+            .map(|m| m.context_connection.clone())
+            .unwrap_or_default();
         let Some(queued) = self
             .saved
             .chats
@@ -49,6 +63,15 @@ impl Harness {
         else {
             return;
         };
+        if queued
+            .connection
+            .as_ref()
+            .is_some_and(|c| c.context_key() != active_connection)
+        {
+            // A different provider/model must wait for its own request, never
+            // enter an already running provider's steering stream.
+            return;
+        }
         if sender.send(queued.message(ctx.input(|i| i.time))).is_ok() {
             queued.dispatched = true;
         }
@@ -75,7 +98,10 @@ impl Harness {
             return false;
         }
         let now = ctx.input(|i| i.time);
-        let settings = self.saved.settings.clone();
+        let mut settings = self.saved.settings.clone();
+        if let Some(connection) = queued.connection.as_ref().or(chat.connection.as_ref()) {
+            connection.apply(&mut settings);
+        }
         if settings.provider == Provider::Codex
             && (!self.auth.account().signed_in || self.auth_url.is_some())
         {
@@ -141,6 +167,8 @@ impl Harness {
         let codex_auth = (settings.provider == Provider::Codex).then(|| self.auth.clone());
         let mut message = Message::new(false, String::new(), now, settings.provider.label().into());
         message.status = Status::Streaming;
+        message.context_connection = settings.context_key();
+        message.context_estimated = true;
         let id = message.id;
         self.reveals
             .insert(id, (Reveal::default(), Reveal::default()));
@@ -227,6 +255,7 @@ impl Harness {
             let chat = self.saved.chats.iter_mut().find(|c| c.id == active.chat)?;
             let prior = chat.messages.iter_mut().find(|m| m.id == active.message)?;
             let provider = prior.provider.clone();
+            let connection = prior.context_connection.clone();
             prior.status = Status::Complete;
             prior.compacting = false;
             prior.elapsed = active.started.elapsed().as_secs_f32();
@@ -249,6 +278,8 @@ impl Harness {
             }
             let mut reply = Message::new(false, String::new(), born, provider);
             reply.status = Status::Streaming;
+            reply.context_connection = connection;
+            reply.context_estimated = true;
             active.message = reply.id;
             active.started = Instant::now();
             self.reveals
@@ -384,6 +415,7 @@ impl Harness {
 
     pub(super) fn poll(&mut self, ctx: &egui::Context) {
         self.poll_recovery(ctx);
+        self.poll_project_picker(ctx);
         if let Some(error) = self.store.poll() {
             self.notify(error, ctx.input(|i| i.time));
         }
@@ -563,9 +595,11 @@ impl Harness {
             ctx.request_repaint_after(interval);
         }
         self.mcp_probe.poll(ctx, interval);
-        let git_root = PathBuf::from(&self.project().path);
-        self.git_probe.update(ctx, &self.runtime, git_root.clone());
-        self.poll_pending_edits(ctx, git_root);
+        if !self.saved.projects.is_empty() {
+            let git_root = PathBuf::from(&self.project().path);
+            self.git_probe.update(ctx, &self.runtime, git_root.clone());
+            self.poll_pending_edits(ctx, git_root);
+        }
         if let Some(rx) = &self.probe_rx {
             if let Ok(result) = rx.try_recv() {
                 self.probe_result = Some(result);

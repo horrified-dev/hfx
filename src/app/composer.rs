@@ -26,6 +26,13 @@ impl Harness {
             .active
             .as_ref()
             .is_some_and(|a| a.chat == chat_id && a.steering.is_some());
+        let active_connection = self.active.as_ref().and_then(|active| {
+            self.saved.chats[index]
+                .messages
+                .iter()
+                .find(|m| m.id == active.message)
+                .map(|m| m.context_connection.as_str())
+        });
         ui.horizontal(|ui| {
             ui.label(
                 RichText::new(format!(
@@ -60,6 +67,7 @@ impl Harness {
                                 ui.add(egui::Label::new(RichText::new(preview).size(12.0)).truncate())).inner
                                 .on_hover_ui(|ui| {
                                     ui.set_max_width(350.0);
+                                    ui.label(RichText::new(queued.connection.as_ref().map_or("Legacy connection", |c| c.provider.label())).size(11.0).color(theme::ACCENT));
                                     ui.label(queued.text.chars().take(1200).collect::<String>());
                                     for attachment in &queued.attachments { ui.label(RichText::new(format!("Attached: {}", attachment.name)).size(11.0).color(theme::MUTED)); }
                                 });
@@ -69,8 +77,9 @@ impl Harness {
                                 } else {
                                     if theme::icon_button(ui, Icon::Trash, "Delete queued message", false, 22.0).clicked() { remove = Some(queued.id); }
                                     if theme::icon_button(ui, Icon::Pencil, "Edit queued message", false, 22.0).clicked() { edit = Some((chat_id, queued.id, queued.text.clone())); }
-                                    if ui.add_enabled(can_steer && !paused, egui::Button::new(RichText::new("Steer").size(11.0)).small())
-                                        .on_hover_text("Guide this chat's current run at the next safe boundary; completed tool calls are not interrupted.").clicked() { steer = Some(queued.id); }
+                                    if ui.add_enabled(can_steer && !paused && queued.connection.as_ref().is_none_or(|c| Some(c.context_key().as_str()) == active_connection), egui::Button::new(RichText::new("Steer").size(11.0)).small())
+                                        .on_hover_text("Guide this chat's current run at the next safe boundary; completed tool calls are not interrupted.")
+                                        .on_disabled_hover_text("Steering requires this chat's active connection. Messages for another provider/model wait for a separate turn.").clicked() { steer = Some(queued.id); }
                                     if !queued.attachments.is_empty() { ui.label(RichText::new(format!("{} {}", queued.attachments.len(), if queued.attachments.len() == 1 { "file" } else { "files" })).size(10.0).color(theme::DIM)); }
                                 }
                             });
@@ -131,11 +140,13 @@ impl Harness {
                                             RichText::new(&self.project().name).size(11.0).color(theme::MUTED),
                                         ).truncate()).on_hover_text(&self.project().path);
                                     });
-                                    ui.label(RichText::new("/").size(11.0).color(theme::DIM));
-                                    let status = self.git_probe.status_for(std::path::Path::new(&self.project().path));
-                                    ui.add(egui::Label::new(
-                                        RichText::new(status.label()).size(11.0).color(theme::MUTED),
-                                    ).truncate()).on_hover_text(status.detail());
+                                    if !self.saved.projects.is_empty() {
+                                        ui.label(RichText::new("/").size(11.0).color(theme::DIM));
+                                        let status = self.git_probe.status_for(std::path::Path::new(&self.project().path));
+                                        ui.add(egui::Label::new(
+                                            RichText::new(status.label()).size(11.0).color(theme::MUTED),
+                                        ).truncate()).on_hover_text(status.detail());
+                                    }
                                 });
                             }
                             ui.add_space(4.0);
@@ -323,7 +334,16 @@ impl Harness {
                         .is_some_and(|a| a.chat != self.saved.selected)
                     {
                         "Enter to queue · waits for the current chat"
-                    } else if self.active.as_ref().is_some_and(|a| a.steering.is_some()) {
+                    } else if self.active.as_ref().is_some_and(|a| {
+                        a.steering.is_some()
+                            && self.saved.chats[self.selected_index()]
+                                .messages
+                                .iter()
+                                .find(|m| m.id == a.message)
+                                .is_some_and(|m| {
+                                    m.context_connection == self.saved.settings.context_key()
+                                })
+                    }) {
                         "Enter to queue · Ctrl/Cmd+Enter to steer"
                     } else if self.active.is_some() {
                         "Enter to queue · Shift+Enter for a new line"

@@ -5,8 +5,7 @@ use crate::{
     theme::{self, Icon},
 };
 use eframe::egui::{
-    self, Align, Align2, Color32, FontId, Frame, Layout, Margin, Response, RichText, Sense, Stroke,
-    Ui, pos2, vec2,
+    self, Align2, Color32, FontId, Frame, Margin, Response, RichText, Sense, Stroke, Ui, pos2, vec2,
 };
 
 pub const GREEN: Color32 = Color32::from_rgb(143, 202, 175);
@@ -391,15 +390,45 @@ pub fn effort(ui: &mut Ui, effort: &mut String) {
 }
 
 pub fn primary(ui: &mut Ui, title: &str) -> Response {
-    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-        theme::dialog_action(ui, title, true)
-    })
-    .inner
+    // Reserve only the control's height, not all remaining panel space.
+    ui.horizontal(|ui| theme::dialog_action(ui, title, true))
+        .inner
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn primary_actions_use_button_height_not_the_remaining_panel_height() {
+        for height in [300.0, 700.0, 2000.0] {
+            let ctx = egui::Context::default();
+            theme::install(&ctx, 15.0, true);
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        pos2(0.0, 0.0),
+                        vec2(320.0, height),
+                    )),
+                    ..Default::default()
+                },
+                |ui| {
+                    style(ui);
+                    let before = ui.label("Above the action");
+                    let action = primary(ui, "Test connection");
+                    let after = ui.label("Below the action");
+                    assert!(
+                        action.rect.top() - before.rect.bottom() <= 16.0,
+                        "action is vertically centered in the unused panel space: {:?}",
+                        action.rect
+                    );
+                    assert!(after.rect.top() - action.rect.bottom() <= 16.0);
+                    assert!((action.rect.height() - 36.0).abs() < 1.0);
+                },
+            );
+            output.textures_delta.clear();
+        }
+    }
 
     #[test]
     fn switches_support_keyboard_pointer_and_disabled_state() {

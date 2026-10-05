@@ -77,7 +77,13 @@ impl Harness {
         }
         if matches!(
             kind,
-            "settings" | "appearance" | "tools" | "codex" | "openrouter" | "git-attribution"
+            "settings"
+                | "appearance"
+                | "tools"
+                | "codex"
+                | "openrouter"
+                | "llama"
+                | "git-attribution"
         ) {
             self.settings_open = true;
             self.saved.settings.provider = Provider::OpenAI;
@@ -85,6 +91,21 @@ impl Harness {
                 self.saved.settings.provider = Provider::Codex;
             } else if kind == "openrouter" {
                 self.saved.settings.provider = Provider::OpenRouter;
+            } else if kind == "llama" {
+                self.saved.settings.provider = Provider::Llama;
+                self.saved.settings.llama_model = "local-model-0".into();
+                self.probe_config = format!(
+                    "{:?}|{}|{}",
+                    self.saved.settings.provider,
+                    self.saved.settings.base_url(),
+                    self.saved.settings.key()
+                );
+                self.probe_result = Some(Ok((0..11)
+                    .map(|index| backend::ModelInfo {
+                        id: format!("local-model-{index}"),
+                        context_window: Some(32768),
+                    })
+                    .collect()));
             }
             if kind == "appearance" {
                 self.settings_tab = 1;

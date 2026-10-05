@@ -317,6 +317,60 @@ impl Settings {
     }
 }
 
+/// The non-secret connection chosen for a chat or queued turn. Global tool,
+/// credential and appearance preferences remain in Settings.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatConnection {
+    pub provider: Provider,
+    pub model: String,
+    pub base_url: String,
+}
+
+impl ChatConnection {
+    pub fn from_settings(settings: &Settings) -> Self {
+        Self {
+            provider: settings.provider,
+            model: settings.model().into(),
+            base_url: if settings.provider == Provider::Codex {
+                "codex".into()
+            } else {
+                settings.base_url().into()
+            },
+        }
+    }
+
+    pub fn apply(&self, settings: &mut Settings) {
+        settings.provider = self.provider;
+        if self.provider != Provider::Demo {
+            *settings.model_mut() = self.model.clone();
+        }
+        if !matches!(self.provider, Provider::Codex | Provider::Demo) {
+            *settings.base_url_mut() = self.base_url.clone();
+        }
+    }
+
+    pub fn context_key(&self) -> String {
+        format!("{:?}|{}|{}", self.provider, self.base_url, self.model)
+    }
+
+    fn from_key(key: &str) -> Option<Self> {
+        let mut fields = key.splitn(3, '|');
+        let provider = match fields.next()? {
+            "Codex" => Provider::Codex,
+            "OpenAI" => Provider::OpenAI,
+            "OpenRouter" => Provider::OpenRouter,
+            "Llama" => Provider::Llama,
+            "Demo" => Provider::Demo,
+            _ => return None,
+        };
+        Some(Self {
+            provider,
+            base_url: fields.next()?.into(),
+            model: fields.next()?.into(),
+        })
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Project {
     pub id: Uuid,
@@ -663,6 +717,8 @@ pub struct QueuedMessage {
     pub text: String,
     #[serde(default)]
     pub attachments: Vec<Attachment>,
+    #[serde(default)]
+    pub connection: Option<ChatConnection>,
     /// Transient: an unacknowledged steer stays in the durable queue.
     #[serde(skip)]
     pub dispatched: bool,
@@ -674,6 +730,7 @@ impl QueuedMessage {
             id: Uuid::new_v4(),
             text,
             attachments,
+            connection: None,
             dispatched: false,
         }
     }
@@ -693,6 +750,8 @@ pub struct Chat {
     pub title: String,
     pub messages: Vec<Message>,
     #[serde(default)]
+    pub connection: Option<ChatConnection>,
+    #[serde(default)]
     pub draft: String,
     #[serde(default)]
     pub attachments: Vec<Attachment>,
@@ -709,6 +768,7 @@ impl Chat {
             project,
             title: "New chat".into(),
             messages: Vec::new(),
+            connection: None,
             draft: String::new(),
             attachments: Vec::new(),
             queue: Vec::new(),
@@ -747,14 +807,14 @@ impl Saved {
     /// Repair references after live chat edits without touching turns or queues.
     /// Restart-only interruption recovery belongs in `restore`, not here.
     pub fn repair_chat_selection(&mut self) {
-        if self.projects.is_empty() {
-            *self = Self::default();
-            return;
-        }
-        self.chats
-            .retain(|c| self.projects.iter().any(|p| p.id == c.project));
+        self.chats.retain(|c| {
+            self.projects.iter().any(|p| p.id == c.project)
+                || (self.projects.is_empty() && c.project.is_nil())
+        });
         if self.chats.is_empty() {
-            self.chats.push(Chat::new(self.projects[0].id));
+            self.chats.push(Chat::new(
+                self.projects.first().map_or(Uuid::nil(), |p| p.id),
+            ));
         }
         if !self.chats.iter().any(|c| c.id == self.selected) {
             self.selected = self.chats[0].id;
@@ -765,6 +825,35 @@ impl Saved {
     pub fn restore(&mut self) {
         self.repair_chat_selection();
         for chat in &mut self.chats {
+            if chat.connection.is_none() {
+                chat.connection = chat.messages.iter().rev().find_map(|message| {
+                    (!message.user)
+                        .then(|| ChatConnection::from_key(&message.context_connection))
+                        .flatten()
+                });
+                if chat.connection.is_none() {
+                    let mut settings = self.settings.clone();
+                    if let Some(reply) = chat.messages.iter().rev().find(|m| !m.user)
+                        && let Some(provider) = [
+                            Provider::Codex,
+                            Provider::OpenAI,
+                            Provider::OpenRouter,
+                            Provider::Llama,
+                            Provider::Demo,
+                        ]
+                        .into_iter()
+                        .find(|p| p.label() == reply.provider)
+                    {
+                        settings.provider = provider;
+                    }
+                    chat.connection = Some(ChatConnection::from_settings(&settings));
+                }
+            }
+            for queued in &mut chat.queue {
+                if queued.connection.is_none() {
+                    queued.connection = chat.connection.clone();
+                }
+            }
             if !chat.queue.is_empty() {
                 chat.queue_paused = true;
             }
@@ -784,6 +873,14 @@ impl Saved {
                     }
                 }
             }
+        }
+        if let Some(connection) = self
+            .chats
+            .iter()
+            .find(|c| c.id == self.selected)
+            .and_then(|c| c.connection.as_ref())
+        {
+            connection.apply(&mut self.settings);
         }
     }
 }
@@ -1221,12 +1318,17 @@ mod tests {
         assert_eq!(saved.chats[0].project, project);
         assert_eq!(saved.selected, saved.chats[0].id);
 
+        let settings = saved.settings.clone();
         saved.projects.clear();
         saved.repair_chat_selection();
-        assert_eq!(saved.projects.len(), 1);
+        assert!(saved.projects.is_empty());
         assert_eq!(saved.chats.len(), 1);
-        assert_eq!(saved.chats[0].project, saved.projects[0].id);
+        assert!(saved.chats[0].project.is_nil());
         assert_eq!(saved.selected, saved.chats[0].id);
+        assert_eq!(
+            serde_json::to_value(saved.settings).unwrap(),
+            serde_json::to_value(settings).unwrap()
+        );
     }
 
     #[test]

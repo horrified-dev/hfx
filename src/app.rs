@@ -5,6 +5,7 @@ mod conversation_layout;
 mod dialogs;
 mod edits;
 mod previews;
+mod projects;
 mod safety;
 mod settings;
 #[cfg(test)]
@@ -18,8 +19,8 @@ use crate::{
     motion::{self, Reveal},
     notifications, persistence, settings_ui as prefs,
     state::{
-        ActionStatus, Attachment, AttachmentContent, Chat, Message, Project, Provider,
-        QueuedMessage, ReplyBlock, Saved, Settings, Status,
+        ActionStatus, Attachment, AttachmentContent, Chat, ChatConnection, Message, Project,
+        Provider, QueuedMessage, ReplyBlock, Saved, Settings, Status,
     },
     theme::{self, Icon},
     tools::{self, ToolCall},
@@ -139,17 +140,23 @@ impl ContextMeter {
             .messages
             .iter()
             .rev()
-            .find(|m| !m.context_connection.is_empty())
+            .find(|m| {
+                !m.context_connection.is_empty()
+                    && !(m.status == Status::Streaming
+                        && m.context_estimated
+                        && m.context_tokens == 0)
+            })
             .filter(|m| m.context_connection == settings.context_key());
         Self {
             used: report.map(|m| m.context_tokens),
             estimated: report.is_some_and(|m| m.context_estimated),
             maximum: settings.context_limit(),
             maximum_source: settings.context_limit_source(),
-            compacting: chat
-                .messages
-                .last()
-                .is_some_and(|m| m.compacting && m.status == Status::Streaming),
+            compacting: chat.messages.last().is_some_and(|m| {
+                m.compacting
+                    && m.status == Status::Streaming
+                    && m.context_connection == settings.context_key()
+            }),
         }
     }
 
@@ -298,10 +305,8 @@ pub struct Harness {
     profile_open: bool,
     search_open: bool,
     search: String,
-    project_modal: bool,
-    project_path: String,
-    project_focus: bool,
-    project_error: Option<String>,
+    project_picker_rx: Option<Receiver<Option<PathBuf>>>,
+    remove_project: Option<Uuid>,
     attach_modal: bool,
     attach_path: String,
     rename: Option<(Uuid, String)>,
@@ -404,10 +409,8 @@ impl Harness {
             profile_open: false,
             search_open: false,
             search: String::new(),
-            project_modal: false,
-            project_path: String::new(),
-            project_focus: false,
-            project_error: None,
+            project_picker_rx: None,
+            remove_project: None,
             attach_modal: false,
             attach_path: String::new(),
             rename: None,
@@ -471,12 +474,34 @@ impl Harness {
             .projects
             .iter()
             .find(|p| p.id == project)
-            .unwrap_or(&self.saved.projects[0])
+            .unwrap_or_else(|| {
+                static EMPTY: std::sync::LazyLock<Project> = std::sync::LazyLock::new(|| Project {
+                    id: Uuid::nil(),
+                    name: "No project".into(),
+                    path: String::new(),
+                    trusted_path: None,
+                });
+                &EMPTY
+            })
+    }
+
+    fn remember_connection(&mut self) {
+        let index = self.selected_index();
+        self.saved.chats[index].connection =
+            Some(ChatConnection::from_settings(&self.saved.settings));
+    }
+
+    fn load_chat_connection(&mut self) {
+        if let Some(connection) = &self.saved.chats[self.selected_index()].connection {
+            connection.apply(&mut self.saved.settings);
+        }
     }
 
     fn select(&mut self, id: Uuid, now: f64) {
-        if self.saved.selected != id {
+        if self.saved.selected != id && self.saved.chats.iter().any(|c| c.id == id) {
+            self.remember_connection();
             self.saved.selected = id;
+            self.load_chat_connection();
             self.view_started = now;
             self.focus_composer = true;
         }
@@ -494,7 +519,8 @@ impl Harness {
             let id = chat.id;
             self.select(id, now);
         } else {
-            let chat = Chat::new(project);
+            let mut chat = Chat::new(project);
+            chat.connection = Some(ChatConnection::from_settings(&self.saved.settings));
             let id = chat.id;
             self.saved.chats.push(chat);
             self.select(id, now);
@@ -530,9 +556,7 @@ impl Harness {
                             ui.close();
                         }
                         if ui.button("Add project").clicked() {
-                            self.project_modal = true;
-                            self.project_focus = true;
-                            self.project_error = None;
+                            self.pick_project(ui.ctx());
                             ui.close();
                         }
                         if ui.button("Attach context file").clicked() {
@@ -710,9 +734,7 @@ impl Harness {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if theme::icon_button(ui, Icon::Plus, "Add project", false, 24.0).clicked()
                         {
-                            self.project_modal = true;
-                            self.project_focus = true;
-                            self.project_error = None;
+                            self.pick_project(ui.ctx());
                         }
                     });
                 });
@@ -749,7 +771,18 @@ impl Harness {
                             if response.clicked() {
                                 self.new_chat(project.id, now);
                             }
-                            response.on_hover_text(&project.path);
+                            let response = response.on_hover_text(&project.path);
+                            egui::Popup::context_menu(&response)
+                                .frame(theme::chat_menu_frame(ui.style()))
+                                .show(|ui| {
+                                    ui.set_width(190.0);
+                                    if theme::menu_action(ui, "Remove project…", Icon::Trash, true)
+                                        .clicked()
+                                    {
+                                        self.remove_project = Some(project.id);
+                                        ui.close();
+                                    }
+                                });
                             let matching = chats
                                 .iter()
                                 .rev()
@@ -858,8 +891,13 @@ impl Harness {
                         }
                     });
                 if let Some(id) = delete {
+                    self.remember_connection();
+                    let selected_deleted = self.saved.selected == id;
                     self.saved.chats.retain(|c| c.id != id);
                     self.saved.repair_chat_selection();
+                    if selected_deleted {
+                        self.load_chat_connection();
+                    }
                     self.reveals.retain(|id, _| {
                         self.saved
                             .chats
@@ -1016,6 +1054,24 @@ impl Harness {
     }
 
     fn welcome(&mut self, ui: &mut Ui, now: f64) {
+        if self.saved.projects.is_empty() {
+            ui.add_space(48.0);
+            ui.vertical_centered(|ui| {
+                ui.heading("Add a project to get started");
+                ui.label("Choose a workspace folder using your system file explorer.");
+                ui.add_space(12.0);
+                if ui
+                    .add_enabled(
+                        self.project_picker_rx.is_none(),
+                        egui::Button::new("Add project"),
+                    )
+                    .clicked()
+                {
+                    self.pick_project(ui.ctx());
+                }
+            });
+            return;
+        }
         let height = ui.available_height();
         let compact = height < 350.0;
         let cards = ui.available_width() > 490.0 && height >= 390.0;
@@ -1164,8 +1220,10 @@ impl Harness {
                 self.image_preview = None;
             } else if let Some(pending) = self.pending.take() {
                 let _ = pending.reply.send(false);
-            } else if self.project_modal {
-                self.project_modal = false;
+            } else if self.remove_project.is_some() {
+                self.remove_project = None;
+            } else if self.project_picker_rx.is_some() {
+                // The system dialog owns cancellation; don't stop a run behind it.
             } else if self.attach_modal {
                 self.attach_modal = false;
             } else if self.queue_edit.is_some() {
@@ -1255,6 +1313,7 @@ impl eframe::App for Harness {
         self.safety_dialogs(&ctx);
         self.changes_window(&ctx);
         self.image_window(&ctx);
+        self.remember_connection();
         if let Some((path, requested)) = &mut self.capture {
             let screenshot = ctx.input(|i| {
                 i.events.iter().find_map(|e| {

@@ -60,9 +60,10 @@ fn codex_llama_new_chat_roundtrip_preserves_usage_and_connection_limits() {
     );
 
     app.select(original_chat, 0.6);
+    assert_eq!(app.saved.settings.provider, Provider::Codex);
     assert_eq!(
         ContextMeter::for_chat(&app.saved.chats[0], &app.saved.settings).used,
-        None
+        Some(180_000)
     );
     app.saved.settings.provider = Provider::Codex;
     draw(
@@ -87,9 +88,10 @@ fn codex_llama_new_chat_roundtrip_preserves_usage_and_connection_limits() {
         Some(180_000)
     );
     app.select(llama_chat, 1.0);
+    assert_eq!(app.saved.settings.provider, Provider::Llama);
     assert_eq!(
         ContextMeter::for_chat(&app.saved.chats[index], &app.saved.settings).used,
-        None
+        Some(16_000)
     );
     app.saved.settings.provider = Provider::Llama;
     let meter = ContextMeter::for_chat(&app.saved.chats[index], &app.saved.settings);
