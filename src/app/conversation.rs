@@ -44,7 +44,13 @@ impl Harness {
                         let reply_id = Id::new(("question_reply", &pending.id));
                         let send_enter = ui.ctx().memory(|m| m.has_focus(reply_id))
                             && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
-                        ui.add_sized([field_width, 28.0], egui::TextEdit::singleline(&mut pending.custom).id(reply_id).hint_text("Or write your own response"));
+                        // TextEdit defaults to top alignment even in a fixed-height
+                        // single-line field. Center the hint, text and caret together.
+                        ui.add_sized([field_width, 28.0], egui::TextEdit::singleline(&mut pending.custom)
+                            .id(reply_id)
+                            .hint_text("Or write your own response")
+                            .vertical_align(Align::Center)
+                            .margin(Margin::symmetric(8, 4)));
                         if ui.button("Skip").clicked() { answer = Some(serde_json::json!({"skipped":true}).to_string()); }
                         if ui.button("Send").clicked() || send_enter {
                             answer = Some(if pending.custom.trim().is_empty() { pending.question.answer(pending.selected, false) } else { serde_json::json!({"answer":pending.custom.trim(),"automatic":false}).to_string() });

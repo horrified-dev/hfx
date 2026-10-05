@@ -20,6 +20,9 @@ mod performance_regressions;
 #[path = "virtualization_tests.rs"]
 mod virtualization_regressions;
 
+#[path = "question_layout_tests.rs"]
+mod question_layout_regressions;
+
 fn draw(
     app: &mut Harness,
     ctx: &egui::Context,
