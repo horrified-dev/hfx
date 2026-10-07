@@ -55,6 +55,10 @@ pub(super) struct ChatBody<'a> {
     max_tokens: u64,
     // Match json!(settings.temperature)'s f32-to-f64 representation exactly.
     temperature: f64,
+    top_k: i32,
+    top_p: f32,
+    presence_penalty: f32,
+    repeat_penalty: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<&'a [Value]>,
 }
@@ -139,6 +143,10 @@ impl<'a> RequestBody<'a> {
                 reasoning_effort: (!router).then_some(&settings.effort),
                 max_tokens: output_limit,
                 temperature: f64::from(settings.temperature),
+                top_p: f32::from(settings.top_p),
+                top_k: i32::from(settings.top_k),
+                presence_penalty: f32::from(settings.presence_penalty),
+                repeat_penalty: f32::from(settings.repeat_penalty),
                 tools,
             })
         }

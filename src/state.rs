@@ -120,6 +120,10 @@ pub struct Settings {
     /// Cached provider metadata, separate so refreshes cannot overwrite manual overrides.
     pub discovered_context_windows: std::collections::BTreeMap<String, u64>,
     pub temperature: f32,
+    pub top_p: f32,
+    pub top_k: i32,
+    pub repeat_penalty: f32,
+    pub presence_penalty: f32,
     /// Public commit attribution, not a login credential. The name stays "hfx".
     pub git_coauthor_email: String,
     pub system_prompt: String,
@@ -163,6 +167,10 @@ impl Default for Settings {
             context_windows: Default::default(),
             discovered_context_windows: Default::default(),
             temperature: 0.7,
+            top_p: 0.95,
+            top_k: 20,
+            presence_penalty: 0.0,
+            repeat_penalty: 1.0,
             git_coauthor_email: DEFAULT_GIT_COAUTHOR_EMAIL.into(),
             system_prompt: "You are a capable coding assistant. Work carefully in the user's workspace. Use tools to inspect files before proposing changes. Explain results clearly and briefly. Never claim to have run a tool that you have not run.".into(),
         }

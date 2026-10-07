@@ -529,6 +529,22 @@ impl Harness {
                 prefs::label(ui, "Temperature");
                 ui.spacing_mut().slider_width = (ui.available_width() - 64.0).max(80.0);
                 ui.add(egui::Slider::new(&mut settings.temperature, 0.0..=1.5));
+
+                prefs::label(ui, "Top P");
+                ui.spacing_mut().slider_width = (ui.available_width() - 64.0).max(80.0);
+                ui.add(egui::Slider::new(&mut settings.top_p, 0.0..=1.0));
+
+                prefs::label(ui, "Top K");
+                ui.spacing_mut().slider_width = (ui.available_width() - 64.0).max(80.0);
+                ui.add(egui::Slider::new(&mut settings.top_k, 0..=100));
+
+                prefs::label(ui, "Rep Penalty");
+                ui.spacing_mut().slider_width = (ui.available_width() - 64.0).max(80.0);
+                ui.add(egui::Slider::new(&mut settings.repeat_penalty, 0.0..=2.0));
+
+                prefs::label(ui, "Pres Penalty");
+                ui.spacing_mut().slider_width = (ui.available_width() - 64.0).max(80.0);
+                ui.add(egui::Slider::new(&mut settings.presence_penalty, 0.0..=2.0));
             }
             prefs::help(
                 ui,
